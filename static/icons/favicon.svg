@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%" role="img" aria-label="Consensauce Icon">
+  <title>Consensauce Icon</title>
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#f43f5e" />
+      <stop offset="100%" stop-color="#f59e0b" />
+    </linearGradient>
+    <linearGradient id="accentGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff" />
+      <stop offset="100%" stop-color="#ffe4e6" />
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="125%">
+      <feDropShadow dx="0" dy="16" stdDeviation="20" flood-color="#000000" flood-opacity="0.3" />
+    </filter>
+  </defs>
+
+  <!-- Squircle Base -->
+  <rect width="512" height="512" rx="112" fill="url(#bgGrad)" />
+
+  <!-- Inner Subtle Glow Ring -->
+  <rect x="8" y="8" width="496" height="496" rx="104" fill="none" stroke="#ffffff" stroke-width="4" stroke-opacity="0.25" />
+
+  <!-- Sauce Bottle & Flame Emblem -->
+  <g filter="url(#shadow)">
+    <!-- Bottle Body -->
+    <path d="M 216 112 L 296 112 Q 306 112 306 122 L 306 150 Q 306 170 336 210 Q 360 242 360 300 C 360 380 326 400 256 400 C 186 400 152 380 152 300 Q 152 242 176 210 Q 206 170 206 150 L 206 122 Q 206 112 216 112 Z" fill="url(#accentGrad)" />
+
+    <!-- Bottle Cap -->
+    <path d="M 226 76 L 286 76 Q 294 76 294 84 L 294 104 Q 294 112 286 112 L 226 112 Q 218 112 218 104 L 218 84 Q 218 76 226 76 Z" fill="#ffe4e6" />
+
+    <!-- Label Shield -->
+    <path d="M 186 244 Q 256 230 326 244 L 326 330 Q 256 360 186 330 Z" fill="#f43f5e" />
+
+    <!-- Star / Flame on Label -->
+    <path d="M 256 254 C 266 274 286 288 286 304 C 286 322 272 334 256 334 C 240 334 226 322 226 304 C 226 292 238 280 244 274 C 244 284 252 292 258 292 C 262 292 266 288 266 284 C 266 276 260 266 256 254 Z" fill="#ffffff" />
+  </g>
+
+  <!-- Sparkles -->
+  <circle cx="120" cy="150" r="10" fill="#ffffff" opacity="0.85" />
+  <circle cx="396" cy="160" r="14" fill="#ffffff" opacity="0.85" />
+  <circle cx="380" cy="380" r="8" fill="#ffffff" opacity="0.7" />
+</svg>

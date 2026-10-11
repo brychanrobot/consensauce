@@ -1,5 +1,6 @@
 <script lang="ts">
 import { useQuery } from 'convex-svelte';
+import { saveDeviceSessionId } from '#lib';
 import { goto } from '$app/navigation';
 import { page } from '$app/state';
 import { api } from '$convex/_generated/api';
@@ -9,6 +10,7 @@ const session = useQuery(api.sessions.getByCode, () => ({ code }));
 
 $effect(() => {
   if (session.data) {
+    saveDeviceSessionId(session.data._id);
     goto(`/session/${session.data._id}`, { replaceState: true });
   }
 });

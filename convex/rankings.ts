@@ -41,10 +41,50 @@ export const joinSession = mutation({
       identity?.subject || args.clientUserId || `guest-${Math.random().toString(36).slice(2, 8)}`;
     const userName = args.userName.trim() || identity?.name || identity?.email || 'Taster';
 
+    const session = await ctx.db.get(args.sessionId);
+
     const existing = await ctx.db
       .query('rankings')
       .withIndex('by_session_user', (q) => q.eq('sessionId', args.sessionId).eq('userId', userId))
       .first();
+
+    // Check for orphaned placeholder host created before clientUserId was supported
+    if (session?.hostId.startsWith('guest-')) {
+      const placeholderHost = await ctx.db
+        .query('rankings')
+        .withIndex('by_session_user', (q) =>
+          q.eq('sessionId', args.sessionId).eq('userId', session.hostId),
+        )
+        .first();
+
+      if (
+        placeholderHost &&
+        placeholderHost.placements.length === 0 &&
+        placeholderHost.userName === 'Host'
+      ) {
+        if (existing) {
+          // If the real user already has a ranking row, remove the orphaned placeholder host
+          await ctx.db.delete(placeholderHost._id);
+          await ctx.db.patch(session._id, {
+            hostId: userId,
+            hostName: userName,
+          });
+        } else {
+          // Reclaim placeholder host ranking for this user
+          await ctx.db.patch(placeholderHost._id, {
+            userId,
+            userName,
+            userAvatar: args.userAvatar || identity?.pictureUrl,
+            updatedAt: Date.now(),
+          });
+          await ctx.db.patch(session._id, {
+            hostId: userId,
+            hostName: userName,
+          });
+          return { rankingId: placeholderHost._id, userId };
+        }
+      }
+    }
 
     if (existing) {
       await ctx.db.patch(existing._id, {
@@ -52,6 +92,10 @@ export const joinSession = mutation({
         userAvatar: args.userAvatar || identity?.pictureUrl,
         updatedAt: Date.now(),
       });
+      // Keep session hostName in sync if host changes their display name
+      if (session && session.hostId === userId && session.hostName !== userName) {
+        await ctx.db.patch(session._id, { hostName: userName });
+      }
       return { rankingId: existing._id, userId };
     }
 

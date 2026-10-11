@@ -1,6 +1,6 @@
 import { defineConfig, devices } from '@playwright/test';
 
-const projectName = 'tears';
+const projectName = 'consensauce';
 const baseURL =
   process.env.PLAYWRIGHT_TEST_BASE_URL ||
   process.env.PORTLESS_URL ||
@@ -13,8 +13,9 @@ export default defineConfig({
   webServer: {
     command: 'pnpm dev',
     url: baseURL,
-    reuseExistingServer: !process.env.CI,
+    reuseExistingServer: true,
     ignoreHTTPSErrors: true,
+    timeout: 60 * 1000,
   },
   use: {
     baseURL,

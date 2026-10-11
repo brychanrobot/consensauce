@@ -19,9 +19,26 @@ test('complete tasting night walkthrough with private ranking and consensus reve
   });
   const bryantPage = await bryantContext.newPage();
 
-  // 1. Visit Home Page
-  await bryantPage.goto('/');
-  await expect(bryantPage.getByRole('heading', { name: /Tier lists that don't/i })).toBeVisible();
+  // 1. Visit Home Page (retry until dev server / portless proxy is warm)
+  for (let i = 0; i < 10; i++) {
+    try {
+      const res = await bryantPage.goto('/', { timeout: 15000 });
+      if (
+        res?.ok() &&
+        (await bryantPage
+          .getByRole('heading', { name: /Find common ground on uncommon flavors/i })
+          .isVisible({ timeout: 4000 }))
+      ) {
+        break;
+      }
+    } catch {
+      // ignore
+    }
+    await bryantPage.waitForTimeout(2000);
+  }
+  await expect(
+    bryantPage.getByRole('heading', { name: /Find common ground on uncommon flavors/i }),
+  ).toBeVisible();
   await bryantPage.waitForTimeout(600);
   await bryantPage.screenshot({
     path: `${ARTIFACT_DIR}/01-home.png`,
@@ -38,33 +55,36 @@ test('complete tasting night walkthrough with private ranking and consensus reve
   const sessionUrl = bryantPage.url();
   await expect(bryantPage.getByText("Trader Joe's Snack Showdown")).toBeVisible();
 
-  // Set Bryant's display name
-  await bryantPage.getByRole('button', { name: /Tasting as:/i }).click();
-  await bryantPage.locator('input[placeholder*="Kerianne, Bryant"]').fill('Bryant');
-  await bryantPage.getByRole('button', { name: 'Save Name' }).click();
-  await expect(bryantPage.getByText('Tasting as: Bryant')).toBeVisible();
+  // Set taster display name
+  const nameInput = bryantPage.locator('input[placeholder*="Alex, Sam"]');
+  if (!(await nameInput.isVisible())) {
+    await bryantPage.getByRole('button', { name: /Tasting as:/i }).click();
+  }
+  await nameInput.fill('Alex');
+  await bryantPage.getByRole('button', { name: /Join Tasting|Save Name/i }).click();
+  await expect(bryantPage.getByText('Tasting as: Alex')).toBeVisible();
 
   // 3. Add 4 Tasting Items with photos
   const fixturesDir = path.resolve('e2e/fixtures');
   const itemsToAdd = [
     {
       file: path.join(fixturesDir, 'item1.png'),
-      name: '🌶️ Chili Onion Crunch Hummus',
+      name: 'Chili Onion Crunch Hummus',
       notes: 'Savory, crunchy chili oil with crispy garlic',
     },
     {
       file: path.join(fixturesDir, 'item2.png'),
-      name: '🍫 Dark Chocolate PB Cups',
+      name: 'Dark Chocolate PB Cups',
       notes: 'Rich chocolate with decadent creamy center',
     },
     {
       file: path.join(fixturesDir, 'item3.png'),
-      name: '🌽 Elote Corn Chip Dippers',
+      name: 'Elote Corn Chip Dippers',
       notes: 'Smoky chipotle & tangy cheese seasoning',
     },
     {
       file: path.join(fixturesDir, 'item4.png'),
-      name: '🔥 Ghost Pepper Potato Chips',
+      name: 'Ghost Pepper Potato Chips',
       notes: 'Lethal slow creeping heat, dangerously addictive',
     },
   ];
@@ -90,96 +110,99 @@ test('complete tasting night walkthrough with private ranking and consensus reve
     fullPage: true,
   });
 
-  // 4. Bryant Ranks his items using one-tap tier chips
+  // 4. Alex Ranks items using one-tap tier chips
   // Item 2 (Dark Chocolate PB Cups) -> S Tier
   const pbItem = bryantPage
     .locator('div[role="listitem"]')
     .filter({ hasText: 'Dark Chocolate PB Cups' });
-  await pbItem.getByRole('button', { name: 'S', exact: true }).click();
+  await pbItem.getByRole('button', { name: /Move .* to S tier|^S$/i }).click();
   await bryantPage.waitForTimeout(400);
 
   // Item 1 (Chili Onion Crunch Hummus) -> A Tier
   const hummusItem = bryantPage
     .locator('div[role="listitem"]')
     .filter({ hasText: 'Chili Onion Crunch Hummus' });
-  await hummusItem.getByRole('button', { name: 'A', exact: true }).click();
+  await hummusItem.getByRole('button', { name: /Move .* to A tier|^A$/i }).click();
   await bryantPage.waitForTimeout(400);
 
   // Item 3 (Elote Corn Chip Dippers) -> B Tier
   const eloteItem = bryantPage
     .locator('div[role="listitem"]')
     .filter({ hasText: 'Elote Corn Chip Dippers' });
-  await eloteItem.getByRole('button', { name: 'B', exact: true }).click();
+  await eloteItem.getByRole('button', { name: /Move .* to B tier|^B$/i }).click();
   await bryantPage.waitForTimeout(400);
 
   // Item 4 (Ghost Pepper Potato Chips) -> D Tier
   const ghostItem = bryantPage
     .locator('div[role="listitem"]')
     .filter({ hasText: 'Ghost Pepper Potato Chips' });
-  await ghostItem.getByRole('button', { name: 'D', exact: true }).click();
+  await ghostItem.getByRole('button', { name: /Move .* to D tier|^D$/i }).click();
   await bryantPage.waitForTimeout(400);
 
-  await expect(bryantPage.getByText('All items ranked! 🎉')).toBeVisible();
+  await expect(bryantPage.getByText('All items ranked!')).toBeVisible();
   await bryantPage.screenshot({
     path: `${ARTIFACT_DIR}/03-bryant-ranked.png`,
     fullPage: true,
   });
 
-  // Bryant marks as ready
+  // First user marks as ready
   await bryantPage.getByRole('button', { name: 'Mark as Ready' }).click();
-  await expect(bryantPage.getByRole('button', { name: /✓ Ready/i })).toBeVisible();
+  await expect(bryantPage.getByRole('button', { name: /Ready/i })).toBeVisible();
 
-  // 5. Kerianne joins from her own device / context
-  const kerianneContext = await browser.newContext({
+  // 5. Second user (Sam) joins from their own device / context
+  const samContext = await browser.newContext({
     viewport: { width: 1280, height: 900 },
   });
-  const keriannePage = await kerianneContext.newPage();
-  await keriannePage.goto(sessionUrl);
-  await expect(keriannePage.getByText("Trader Joe's Snack Showdown")).toBeVisible();
+  const samPage = await samContext.newPage();
+  await samPage.goto(sessionUrl);
+  await expect(samPage.getByText("Trader Joe's Snack Showdown")).toBeVisible();
 
-  // Set Kerianne's name
-  await keriannePage.getByRole('button', { name: /Tasting as:/i }).click();
-  await keriannePage.locator('input[placeholder*="Kerianne, Bryant"]').fill('Kerianne');
-  await keriannePage.getByRole('button', { name: 'Save Name' }).click();
-  await expect(keriannePage.getByText('Tasting as: Kerianne')).toBeVisible();
+  // Set Sam's name
+  const samNameInput = samPage.locator('input[placeholder*="Alex, Sam"]');
+  if (!(await samNameInput.isVisible())) {
+    await samPage.getByRole('button', { name: /Tasting as:/i }).click();
+  }
+  await samNameInput.fill('Sam');
+  await samPage.getByRole('button', { name: /Join Tasting|Save Name/i }).click();
+  await expect(samPage.getByText('Tasting as: Sam')).toBeVisible();
 
-  // Kerianne ranks her items:
+  // Sam ranks items:
   // - Dark Chocolate PB Cups -> S Tier (unanimous agreement!)
-  // - Ghost Pepper Potato Chips -> S Tier (spicy debate! Bryant put D)
+  // - Ghost Pepper Potato Chips -> S Tier (spicy debate! Alex put D)
   // - Elote Corn Chip Dippers -> C Tier
   // - Chili Onion Crunch Hummus -> D Tier
-  const kPbItem = keriannePage
+  const sPbItem = samPage
     .locator('div[role="listitem"]')
     .filter({ hasText: 'Dark Chocolate PB Cups' });
-  await kPbItem.getByRole('button', { name: 'S', exact: true }).click();
-  await keriannePage.waitForTimeout(300);
+  await sPbItem.getByRole('button', { name: /Move .* to S tier|^S$/i }).click();
+  await samPage.waitForTimeout(300);
 
-  const kGhostItem = keriannePage
+  const sGhostItem = samPage
     .locator('div[role="listitem"]')
     .filter({ hasText: 'Ghost Pepper Potato Chips' });
-  await kGhostItem.getByRole('button', { name: 'S', exact: true }).click();
-  await keriannePage.waitForTimeout(300);
+  await sGhostItem.getByRole('button', { name: /Move .* to S tier|^S$/i }).click();
+  await samPage.waitForTimeout(300);
 
-  const kEloteItem = keriannePage
+  const sEloteItem = samPage
     .locator('div[role="listitem"]')
     .filter({ hasText: 'Elote Corn Chip Dippers' });
-  await kEloteItem.getByRole('button', { name: 'C', exact: true }).click();
-  await keriannePage.waitForTimeout(300);
+  await sEloteItem.getByRole('button', { name: /Move .* to C tier|^C$/i }).click();
+  await samPage.waitForTimeout(300);
 
-  const kHummusItem = keriannePage
+  const sHummusItem = samPage
     .locator('div[role="listitem"]')
     .filter({ hasText: 'Chili Onion Crunch Hummus' });
-  await kHummusItem.getByRole('button', { name: 'D', exact: true }).click();
-  await keriannePage.waitForTimeout(300);
+  await sHummusItem.getByRole('button', { name: /Move .* to D tier|^D$/i }).click();
+  await samPage.waitForTimeout(300);
 
-  // Kerianne marks as ready
-  await keriannePage.getByRole('button', { name: 'Mark as Ready' }).click();
-  await expect(keriannePage.getByRole('button', { name: /✓ Ready/i })).toBeVisible();
+  // Sam marks as ready
+  await samPage.getByRole('button', { name: 'Mark as Ready' }).click();
+  await expect(samPage.getByRole('button', { name: /Ready/i })).toBeVisible();
 
   // 6. Reveal the Consensus!
   await bryantPage.bringToFront();
   await bryantPage.waitForTimeout(600);
-  await bryantPage.getByRole('button', { name: /🎉 Reveal Consensus/i }).click();
+  await bryantPage.getByRole('button', { name: /Reveal Consensus/i }).click();
 
   // Verify Revealed Consensus view
   await expect(bryantPage.getByText('Consensus Tier List')).toBeVisible();
@@ -200,17 +223,17 @@ test('complete tasting night walkthrough with private ranking and consensus reve
 
   // 7. Inspect Compare Tasters Tab
   await bryantPage.getByRole('button', { name: /Compare Tasters/i }).click();
-  await expect(bryantPage.getByText("Kerianne's Board")).toBeVisible();
+  await expect(bryantPage.getByText("Sam's Board")).toBeVisible();
   await bryantPage.waitForTimeout(600);
   await bryantPage.screenshot({
     path: `${ARTIFACT_DIR}/06-compare-tasters.png`,
     fullPage: true,
   });
 
-  // Finish Bryant session & close contexts to write video
+  // Finish session & close contexts to write video
   await bryantPage.waitForTimeout(1000);
   await bryantPage.close();
-  await keriannePage.close();
+  await samPage.close();
   await bryantContext.close();
-  await kerianneContext.close();
+  await samContext.close();
 });

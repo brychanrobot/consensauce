@@ -9,5 +9,6 @@
       "$lib/*": ["./src/lib/*"]
     }
   },
-  "include": ["src", "convex", "vite.config.ts", "playwright.config.ts"]
+  "include": ["src", "convex", "vite.config.ts", "playwright.config.ts"],
+  "exclude": ["src/service-worker.*"]
 }

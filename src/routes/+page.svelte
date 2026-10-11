@@ -1,11 +1,28 @@
 <script lang="ts">
 import { useMutation, useQuery } from 'convex-svelte';
 import { useClerkContext } from 'svelte-clerk/client';
+import {
+  getDeviceRecentSessionIds,
+  getOrCreateClientUserId,
+  getStoredUserName,
+  SparklesIcon,
+  saveDeviceSessionId,
+  TicketIcon,
+} from '#lib';
 import { goto } from '$app/navigation';
 import { api } from '$convex/_generated/api';
+import type { Id } from '$convex/_generated/dataModel';
 
 const clerk = useClerkContext();
-const recentSessions = useQuery(api.sessions.listRecent, {});
+let deviceSessionIds = $state<Id<'sessions'>[]>([]);
+
+$effect(() => {
+  deviceSessionIds = getDeviceRecentSessionIds() as Id<'sessions'>[];
+});
+
+const recentSessions = useQuery(api.sessions.listRecent, () => ({
+  deviceSessionIds: !clerk.user ? deviceSessionIds : undefined,
+}));
 const createSession = useMutation(api.sessions.create);
 
 let title = $state('');
@@ -21,12 +38,15 @@ async function handleCreate(e: SubmitEvent) {
 
   isCreating = true;
   try {
-    const hostName = clerk.user?.fullName || clerk.user?.firstName || 'Host';
+    const clientUserId = clerk.user?.id || getOrCreateClientUserId();
+    const hostName = clerk.user?.fullName || clerk.user?.firstName || getStoredUserName() || 'Host';
     const result = await createSession({
       title: sessionTitle,
       hostName,
+      clientUserId,
     });
     if (result?.sessionId) {
+      saveDeviceSessionId(result.sessionId);
       goto(`/session/${result.sessionId}`);
     }
   } catch (err: unknown) {
@@ -60,7 +80,7 @@ async function handleJoin(e: SubmitEvent) {
 			Real-Time Tasting Nights
 		</div>
 		<h1 class="text-4xl sm:text-5xl md:text-6xl font-black tracking-tight text-foreground leading-[1.1]">
-			Tier lists that don't <span class="bg-gradient-to-r from-rose-500 via-amber-500 to-yellow-500 bg-clip-text text-transparent">suck</span>.
+			Find common ground on <span class="bg-gradient-to-r from-rose-500 via-amber-500 to-yellow-500 bg-clip-text text-transparent">uncommon flavors</span>.
 		</h1>
 		<p class="text-base sm:text-lg text-muted-foreground max-w-xl mx-auto leading-relaxed">
 			Snap pictures of each item as you taste. Rank privately on your phones.
@@ -74,8 +94,8 @@ async function handleJoin(e: SubmitEvent) {
 		<div class="rounded-2xl border border-border/70 bg-card p-6 sm:p-8 shadow-sm flex flex-col justify-between space-y-6 relative overflow-hidden">
 			<div class="absolute -right-8 -top-8 w-32 h-32 bg-rose-500/5 rounded-full blur-2xl pointer-events-none"></div>
 			<div class="space-y-2">
-				<div class="w-10 h-10 rounded-xl bg-rose-500/10 flex items-center justify-center text-xl text-rose-500">
-					✨
+				<div class="w-10 h-10 rounded-xl bg-rose-500/10 flex items-center justify-center text-rose-500">
+					<SparklesIcon class="w-5 h-5 text-rose-500" />
 				</div>
 				<h2 class="text-xl font-bold tracking-tight">Start a Tasting Night</h2>
 				<p class="text-sm text-muted-foreground">
@@ -114,12 +134,12 @@ async function handleJoin(e: SubmitEvent) {
 		<div class="rounded-2xl border border-border/70 bg-card p-6 sm:p-8 shadow-sm flex flex-col justify-between space-y-6 relative overflow-hidden">
 			<div class="absolute -right-8 -top-8 w-32 h-32 bg-amber-500/5 rounded-full blur-2xl pointer-events-none"></div>
 			<div class="space-y-2">
-				<div class="w-10 h-10 rounded-xl bg-amber-500/10 flex items-center justify-center text-xl text-amber-500">
-					🎟️
+				<div class="w-10 h-10 rounded-xl bg-amber-500/10 flex items-center justify-center text-amber-500">
+					<TicketIcon class="w-5 h-5 text-amber-500" />
 				</div>
 				<h2 class="text-xl font-bold tracking-tight">Join with Code</h2>
 				<p class="text-sm text-muted-foreground">
-					Have a 6-letter room code from Kerianne or your host? Enter it here to jump right in.
+					Have a 6-letter room code from your host or a friend? Enter it here to jump right in.
 				</p>
 			</div>
 
@@ -172,7 +192,11 @@ async function handleJoin(e: SubmitEvent) {
 			<div class="p-10 rounded-2xl border border-dashed border-border/70 text-center space-y-2">
 				<p class="text-sm font-medium text-foreground">No tasting sessions yet.</p>
 				<p class="text-xs text-muted-foreground">
-					Create your first tasting room above to start snapping items and ranking!
+					{#if !clerk.user}
+						Sign in to sync your rooms across devices, or create a new tasting room above!
+					{:else}
+						Create your first tasting room above to start snapping items and ranking!
+					{/if}
 				</p>
 			</div>
 		{:else}

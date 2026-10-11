@@ -39,10 +39,12 @@ export const create = mutation({
       ),
     ),
     hostName: v.optional(v.string()),
+    clientUserId: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const identity = await ctx.auth.getUserIdentity();
-    const hostId = identity ? identity.subject : `guest-${Math.random().toString(36).slice(2, 8)}`;
+    const hostId =
+      identity?.subject || args.clientUserId || `guest-${Math.random().toString(36).slice(2, 8)}`;
     const hostName =
       args.hostName || (identity ? identity.name || identity.email || 'Host' : 'Host');
 
@@ -103,11 +105,13 @@ export const getByCode = query({
 });
 
 export const listRecent = query({
-  args: {},
-  handler: async (ctx) => {
+  args: {
+    deviceSessionIds: v.optional(v.array(v.id('sessions'))),
+  },
+  handler: async (ctx, args) => {
     const identity = await ctx.auth.getUserIdentity();
     if (identity) {
-      // Find sessions hosted or participated by user
+      // Find sessions hosted by signed-in user
       const hosted = await ctx.db
         .query('sessions')
         .withIndex('by_host', (q) => q.eq('hostId', identity.subject))
@@ -115,8 +119,14 @@ export const listRecent = query({
         .take(20);
       return hosted;
     }
-    // Return latest active public sessions for easy local testing
-    return await ctx.db.query('sessions').order('desc').take(10);
+    // For unauthenticated guests, only return sessions they created or joined on this device
+    if (args.deviceSessionIds && args.deviceSessionIds.length > 0) {
+      const sessions = await Promise.all(
+        args.deviceSessionIds.slice(0, 10).map((id) => ctx.db.get(id)),
+      );
+      return sessions.filter((s): s is NonNullable<typeof s> => s !== null);
+    }
+    return [];
   },
 });
 

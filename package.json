@@ -1,12 +1,12 @@
 {
-  "name": "tears",
+  "name": "consensauce",
   "private": true,
   "version": "0.0.1",
   "type": "module",
   "scripts": {
     "dev": "portless run vite dev",
     "build": "vite build",
-    "preview": "portless preview.tears vite preview",
+    "preview": "portless preview.consensauce vite preview",
     "prepare": "svelte-kit sync || echo ''",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json && biome check .",
     "lint": "biome lint .",
@@ -14,7 +14,10 @@
     "lint:fix": "biome check --write .",
     "test": "pnpm run test:unit && pnpm run test:e2e",
     "test:unit": "vitest run",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "test:walkthrough": "playwright test e2e/walkthrough.spec.ts",
+    "test:mobile": "playwright test e2e/mobile-walkthrough.spec.ts",
+    "deploy": "pnpm dlx vercel --prod --yes"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.15",

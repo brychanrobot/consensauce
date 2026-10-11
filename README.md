@@ -1,8 +1,8 @@
-# 👅 Tears — Real-Time Collaborative Taste Tests & Tier Lists
+# 🥫 Consensauce — Real-Time Collaborative Taste Tests & Tier Lists
 
-**Tears** is a collaborative, real-time tier list platform specifically engineered for taste tests (Trader Joe's snacks, craft beers, dips, hot sauces, coffee beans, and takeout showdowns).
+**Consensauce** is a collaborative, real-time tier list platform specifically engineered for taste tests (Trader Joe's snacks, craft beers, dips, hot sauces, coffee beans, and takeout showdowns).
 
-Most online tier list makers are clunky, desktop-only, and lack real-time synchronization. Tears provides an effortless, mobile-friendly experience designed for tasting nights with friends or partners.
+Most online tier list makers are clunky, desktop-only, and lack real-time synchronization. Consensauce provides an effortless, mobile-friendly Progressive Web App (PWA) designed for tasting nights with friends or partners.
 
 ---
 
@@ -10,6 +10,7 @@ Most online tier list makers are clunky, desktop-only, and lack real-time synchr
 
 - 📸 **Live Synchronized Item Queue**: Snap photos with your phone camera or upload images. Convex storage uploads and broadcasts items in real time over WebSockets to every connected taster.
 - 📱 **Private Independent Ranking**: Rate items privately on your own screen so you don't bias each other's opinions.
+- 📲 **Progressive Web App (PWA)**: Installable directly to mobile home screen with offline asset caching and full-screen experience.
 - 🎯 **Dual Input Modes**: Tactile HTML5 drag-and-drop row reordering plus quick one-tap tier chips (`[S] [A] [B] [C] [D] [F]`) optimized for mobile lounging.
 - 🌶️ **Spiciest Debate**: Automated superlatives engine calculates and highlights the item with the highest tier variance between tasters.
 - 🤝 **Mind Meld**: Surfaces unanimous agreement when everyone picks the exact same tier.
@@ -24,7 +25,7 @@ Most online tier list makers are clunky, desktop-only, and lack real-time synchr
 - **Styling**: [Tailwind CSS v4](https://tailwindcss.com) with `@tailwindcss/vite`
 - **Backend & Database**: [Convex](https://convex.dev) reactive database, functions, and file storage
 - **Authentication**: [Clerk](https://clerk.com) via `svelte-clerk`
-- **Routing & Local Dev**: [Portless](https://github.com/vercel-labs/portless) (`https://tears.localhost`)
+- **Routing & Local Dev**: [Portless](https://github.com/vercel-labs/portless) (`https://consensauce.localhost`)
 - **Code Quality**: [Biome 2.5](https://biomejs.dev)
 - **Testing**: [Vitest](https://vitest.dev) (unit & browser) and [Playwright](https://playwright.dev) (end-to-end)
 - **Version Control**: [Jujutsu (`jj`)](https://github.com/martinvonz/jj)
@@ -58,7 +59,7 @@ Most online tier list makers are clunky, desktop-only, and lack real-time synchr
    ```bash
    pnpm dev
    ```
-   Open [https://tears.localhost](https://tears.localhost) in your browser.
+   Open [https://consensauce.localhost](https://consensauce.localhost) in your browser.
 
 ---
 

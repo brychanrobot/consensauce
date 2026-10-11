@@ -1,13 +1,36 @@
 <script lang="ts">
 import { useMutation, useQuery } from 'convex-svelte';
 import { useClerkContext } from 'svelte-clerk/client';
-import { uploadImageToConvex } from '#lib';
+import {
+  CameraIcon,
+  CheckIcon,
+  CloseIcon,
+  CopyIcon,
+  EditIcon,
+  EyeIcon,
+  FlameIcon,
+  HandshakeIcon,
+  ShareIcon,
+  SparklesIcon,
+  saveDeviceSessionId,
+  TastingBottleIcon,
+  TrophyIcon,
+  UserIcon,
+  UsersIcon,
+  uploadImageToConvex,
+} from '#lib';
 import { page } from '$app/state';
 import { api } from '$convex/_generated/api';
 import type { Id } from '$convex/_generated/dataModel';
 
 const clerk = useClerkContext();
 const sessionId = $derived(page.params.id as Id<'sessions'>);
+
+$effect(() => {
+  if (sessionId) {
+    saveDeviceSessionId(sessionId);
+  }
+});
 
 // Queries
 const session = useQuery(api.sessions.get, () => ({ sessionId }));
@@ -27,24 +50,35 @@ const updateSessionStatus = useMutation(api.sessions.updateStatus);
 // Client-side identity for testing or guest access
 let localUserId = $state('');
 let localUserName = $state('');
+let isNameModalOpen = $state(false);
+let isNameRequired = $state(false);
+let tempUserName = $state('');
 
 $effect(() => {
   if (typeof window !== 'undefined') {
-    let id = localStorage.getItem('tears_client_id');
+    let id =
+      localStorage.getItem('consensauce_client_id') || localStorage.getItem('tears_client_id');
     if (!id) {
       id = `user_${Math.random().toString(36).substring(2, 9)}`;
-      localStorage.setItem('tears_client_id', id);
+      localStorage.setItem('consensauce_client_id', id);
     }
     localUserId = id;
 
-    let storedName = localStorage.getItem('tears_user_name');
+    let storedName =
+      localStorage.getItem('consensauce_user_name') || localStorage.getItem('tears_user_name');
     if (clerk.user?.fullName) {
       localUserName = clerk.user.fullName;
-    } else if (storedName) {
-      localUserName = storedName;
+      if (!storedName) {
+        localStorage.setItem('consensauce_user_name', clerk.user.fullName);
+      }
+    } else if (storedName?.trim()) {
+      localUserName = storedName.trim();
     } else {
-      localUserName = `Taster ${id.slice(-3).toUpperCase()}`;
-      localStorage.setItem('tears_user_name', localUserName);
+      // Unauthenticated user without a configured name: present blocking modal!
+      localUserName = '';
+      tempUserName = '';
+      isNameRequired = true;
+      isNameModalOpen = true;
     }
   }
 });
@@ -85,6 +119,17 @@ const unrankedItems = $derived.by(() => {
   return list.filter((item) => !myPlacementMap.has(item._id));
 });
 
+// Derived stats for progress & social party bar
+const totalItemCount = $derived(items.data?.length ?? 0);
+const myRankedCount = $derived(myPlacementMap.size);
+const myProgressPercent = $derived(
+  totalItemCount > 0 ? Math.round((myRankedCount / totalItemCount) * 100) : 0,
+);
+const readyTastersCount = $derived((rankings.data ?? []).filter((r) => r.isReady).length);
+const allTastersReady = $derived(
+  (rankings.data?.length ?? 0) > 0 && !!rankings.data?.every((r) => r.isReady),
+);
+
 // Active tab in revealed mode ('consensus' | 'compare' | 'my')
 let activeTab = $state<'consensus' | 'compare' | 'my'>('consensus');
 let compareUserIndex = $state(0);
@@ -98,10 +143,6 @@ let newItemNotes = $state('');
 let selectedFile = $state<File | null>(null);
 let previewUrl = $state<string | null>(null);
 let fileInputRef = $state<HTMLInputElement | null>(null);
-
-// Name edit modal state
-let isNameModalOpen = $state(false);
-let tempUserName = $state('');
 
 // Copy feedback
 let copyFeedback = $state('');
@@ -198,22 +239,205 @@ function copyRoomLink() {
   }
 }
 
+function copyRoomCode(code: string) {
+  if (typeof window !== 'undefined') {
+    navigator.clipboard.writeText(code);
+    copyFeedback = `Code ${code} copied!`;
+    setTimeout(() => (copyFeedback = ''), 2000);
+  }
+}
+
+function openNameModal() {
+  tempUserName = localUserName;
+  isNameRequired = false;
+  isNameModalOpen = true;
+}
+
 function saveNewName() {
   const trimmed = tempUserName.trim();
   if (!trimmed) return;
   localUserName = trimmed;
   if (typeof window !== 'undefined') {
-    localStorage.setItem('tears_user_name', trimmed);
+    localStorage.setItem('consensauce_user_name', trimmed);
   }
   joinSession({
     sessionId,
     clientUserId: localUserId,
     userName: trimmed,
-  });
+    userAvatar: clerk.user?.imageUrl,
+  }).catch((err) => console.error('Join error:', err));
   isNameModalOpen = false;
+  isNameRequired = false;
 }
 
-// Drag & Drop helpers
+// Drag & Drop State & Touch/Pointer Engine
+interface DraggedItemState {
+  id: Id<'items'>;
+  name: string;
+  imageUrl?: string;
+  notes?: string;
+  originTierId: string | null;
+}
+
+let activeDrag = $state<DraggedItemState | null>(null);
+let dragPointerPos = $state<{ x: number; y: number }>({ x: 0, y: 0 });
+let hoveredDropTier = $state<string | null>(null);
+let isTouchDragging = $state(false);
+const isUnrankedHovered = $derived(hoveredDropTier === '__unranked__');
+
+let startPointerPos = { x: 0, y: 0 };
+let currentPointerId: number | null = null;
+let dragCandidate: DraggedItemState | null = null;
+
+// Smooth Auto-Scrolling during drag (Touch + Desktop)
+let autoScrollRaf: number | null = null;
+let autoScrollSpeed = 0;
+
+function startAutoScroll(speed: number) {
+  autoScrollSpeed = speed;
+  if (autoScrollRaf !== null) return;
+
+  function step() {
+    if (autoScrollSpeed !== 0) {
+      window.scrollBy({ top: autoScrollSpeed, behavior: 'instant' });
+      autoScrollRaf = requestAnimationFrame(step);
+    } else {
+      if (autoScrollRaf !== null) {
+        cancelAnimationFrame(autoScrollRaf);
+        autoScrollRaf = null;
+      }
+    }
+  }
+  autoScrollRaf = requestAnimationFrame(step);
+}
+
+function stopAutoScroll() {
+  autoScrollSpeed = 0;
+  if (autoScrollRaf !== null) {
+    cancelAnimationFrame(autoScrollRaf);
+    autoScrollRaf = null;
+  }
+}
+
+function updateAutoScroll(clientY: number) {
+  if (typeof window === 'undefined') return;
+  const edgeThreshold = 130;
+  const maxSpeed = 22;
+  const viewportHeight = window.innerHeight;
+
+  if (clientY < edgeThreshold) {
+    // Scrolling UP towards the top of page
+    const intensity = Math.max(0, (edgeThreshold - clientY) / edgeThreshold);
+    const speed = -Math.round(intensity * maxSpeed + 4);
+    startAutoScroll(speed);
+  } else if (clientY > viewportHeight - edgeThreshold) {
+    // Scrolling DOWN towards the bottom of page
+    const intensity = Math.max(0, (clientY - (viewportHeight - edgeThreshold)) / edgeThreshold);
+    const speed = Math.round(intensity * maxSpeed + 4);
+    startAutoScroll(speed);
+  } else {
+    stopAutoScroll();
+  }
+}
+
+function handlePointerDown(
+  e: PointerEvent,
+  item: { _id: Id<'items'>; name: string; imageUrl?: string; notes?: string },
+  originTierId: string | null,
+) {
+  // Let native HTML5 drag-and-drop handle mouse events on desktop
+  if (e.pointerType === 'mouse' || e.button !== 0) return;
+  const target = e.target as HTMLElement | null;
+  if (target?.closest('button, a, input, select, textarea')) return;
+
+  startPointerPos = { x: e.clientX, y: e.clientY };
+  currentPointerId = e.pointerId;
+  dragCandidate = {
+    id: item._id,
+    name: item.name,
+    imageUrl: item.imageUrl,
+    notes: item.notes,
+    originTierId,
+  };
+
+  function onPointerMove(moveEvent: PointerEvent) {
+    if (moveEvent.pointerId !== currentPointerId || !dragCandidate) return;
+
+    const dx = moveEvent.clientX - startPointerPos.x;
+    const dy = moveEvent.clientY - startPointerPos.y;
+    const distSq = dx * dx + dy * dy;
+
+    if (!isTouchDragging && distSq > 36) {
+      isTouchDragging = true;
+      activeDrag = dragCandidate;
+      if (typeof navigator !== 'undefined' && navigator.vibrate) {
+        navigator.vibrate(25);
+      }
+    }
+
+    if (isTouchDragging) {
+      if (moveEvent.cancelable) {
+        moveEvent.preventDefault();
+      }
+      dragPointerPos = { x: moveEvent.clientX, y: moveEvent.clientY };
+      updateAutoScroll(moveEvent.clientY);
+
+      const elem = document.elementFromPoint(moveEvent.clientX, moveEvent.clientY);
+      const dropzone = elem?.closest<HTMLElement>('[data-dropzone-tier]');
+      const nextTier = dropzone ? dropzone.dataset.dropzoneTier || null : null;
+      if (nextTier !== hoveredDropTier) {
+        hoveredDropTier = nextTier;
+        if (typeof navigator !== 'undefined' && navigator.vibrate) {
+          navigator.vibrate(10);
+        }
+      }
+    }
+  }
+
+  function cleanup() {
+    stopAutoScroll();
+    window.removeEventListener('pointermove', onPointerMove);
+    window.removeEventListener('pointerup', onPointerUp);
+    window.removeEventListener('pointercancel', onPointerCancel);
+  }
+
+  function onPointerUp(upEvent: PointerEvent) {
+    if (upEvent.pointerId !== currentPointerId) return;
+    cleanup();
+
+    if (isTouchDragging && activeDrag && hoveredDropTier !== null) {
+      const targetTier = hoveredDropTier === '__unranked__' ? null : hoveredDropTier;
+      if (targetTier !== activeDrag.originTierId) {
+        handleMoveItem(activeDrag.id, targetTier);
+        if (typeof navigator !== 'undefined' && navigator.vibrate) {
+          navigator.vibrate([15, 30, 20]);
+        }
+      }
+    }
+
+    isTouchDragging = false;
+    activeDrag = null;
+    hoveredDropTier = null;
+    currentPointerId = null;
+    dragCandidate = null;
+  }
+
+  function onPointerCancel(cancelEvent: PointerEvent) {
+    if (cancelEvent.pointerId !== currentPointerId) return;
+    cleanup();
+    isTouchDragging = false;
+    activeDrag = null;
+    hoveredDropTier = null;
+    currentPointerId = null;
+    dragCandidate = null;
+  }
+
+  window.addEventListener('pointermove', onPointerMove, { passive: false });
+  window.addEventListener('pointerup', onPointerUp);
+  window.addEventListener('pointercancel', onPointerCancel);
+}
+
+// HTML5 Desktop Drag & Drop helpers
 let draggedItemId = $state<string | null>(null);
 
 function onDragStart(e: DragEvent, itemId: string) {
@@ -224,20 +448,33 @@ function onDragStart(e: DragEvent, itemId: string) {
   }
 }
 
-function onDragOver(e: DragEvent) {
+function onDragOver(e: DragEvent, tierId: string | null) {
   e.preventDefault();
+  hoveredDropTier = tierId === null ? '__unranked__' : tierId;
+  updateAutoScroll(e.clientY);
   if (e.dataTransfer) {
     e.dataTransfer.dropEffect = 'move';
   }
 }
 
+function onDragLeave(e: DragEvent) {
+  const currentTarget = e.currentTarget as HTMLElement;
+  const relatedTarget = e.relatedTarget as HTMLElement;
+  if (!currentTarget.contains(relatedTarget)) {
+    hoveredDropTier = null;
+    stopAutoScroll();
+  }
+}
+
 function onDropTier(e: DragEvent, tierId: string | null) {
   e.preventDefault();
+  stopAutoScroll();
   const itemId = draggedItemId || e.dataTransfer?.getData('text/plain');
   if (itemId) {
     handleMoveItem(itemId as Id<'items'>, tierId);
   }
   draggedItemId = null;
+  hoveredDropTier = null;
 }
 </script>
 
@@ -263,90 +500,163 @@ function onDropTier(e: DragEvent, tierId: string | null) {
 	{@const consensusData = consensus.data}
 
 	<!-- Room Header & Control Bar -->
-	<div class="space-y-6">
-		<div class="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-border/60">
-			<div class="space-y-1">
-				<div class="flex items-center gap-2.5">
-					<h1 class="text-2xl sm:text-3xl font-black tracking-tight">{s.title}</h1>
+	<div class="space-y-4 sm:space-y-6 pb-20 sm:pb-8">
+		<div class="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-4 border-b border-border/60">
+			<div class="space-y-2">
+				<div class="flex items-center gap-2.5 flex-wrap">
+					<h1 class="text-xl sm:text-2xl md:text-3xl font-black tracking-tight">{s.title}</h1>
 					<span
-						class="text-xs font-bold px-2.5 py-0.5 rounded-full uppercase tracking-wider {s.status === 'revealed'
+						class="text-[11px] font-bold px-2.5 py-0.5 rounded-full uppercase tracking-wider inline-flex items-center gap-1.5 {s.status === 'revealed'
 							? 'bg-purple-500/15 text-purple-600 dark:text-purple-400 border border-purple-500/25'
 							: 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/25'}"
 					>
-						{s.status === 'revealed' ? '🎉 Revealed' : '👅 Live Tasting'}
+						{#if s.status === 'revealed'}
+							<TrophyIcon class="w-3 h-3 text-purple-500" />
+							<span>Revealed</span>
+						{:else}
+							<span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+							<span>Live Tasting</span>
+						{/if}
 					</span>
 				</div>
-				<div class="flex items-center gap-3 text-xs text-muted-foreground">
-					<span>Room Code: <strong class="font-mono text-foreground">{s.code}</strong></span>
-					<span>•</span>
+
+				<div class="flex items-center gap-2 sm:gap-3 flex-wrap text-xs text-muted-foreground">
 					<button
+						type="button"
+						onclick={() => copyRoomCode(s.code)}
+						class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-muted/80 hover:bg-muted text-foreground border border-border/70 font-mono font-bold text-xs transition-colors cursor-pointer"
+						title="Tap to copy room code"
+					>
+						<span class="text-muted-foreground font-sans font-normal">Code:</span>
+						<span class="tracking-wider">{s.code}</span>
+						<CopyIcon class="w-3 h-3 text-muted-foreground" />
+					</button>
+
+					<button
+						type="button"
 						onclick={copyRoomLink}
-						class="hover:text-foreground font-medium underline underline-offset-2 transition-colors cursor-pointer"
+						class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-secondary/80 hover:bg-secondary text-secondary-foreground text-xs font-semibold border border-border/70 transition-colors cursor-pointer"
 					>
-						{copyFeedback || 'Share Link'}
+						<ShareIcon class="w-3.5 h-3.5" />
+						<span>Share Invite</span>
 					</button>
-					<span>•</span>
+
 					<button
-						onclick={() => {
-							tempUserName = localUserName;
-							isNameModalOpen = true;
-						}}
-						class="hover:text-foreground font-medium underline underline-offset-2 transition-colors cursor-pointer"
+						type="button"
+						onclick={openNameModal}
+						class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-muted/60 hover:bg-muted text-foreground border border-border/70 text-xs font-medium transition-colors cursor-pointer"
 					>
-						Tasting as: <strong class="text-foreground">{localUserName}</strong> ✏️
+						<UserIcon class="w-3.5 h-3.5 text-muted-foreground" />
+						<span>Tasting as: <strong class="text-foreground">{localUserName || 'Guest'}</strong></span>
+						<EditIcon class="w-2.5 h-2.5 text-muted-foreground" />
 					</button>
+
+					{#if copyFeedback}
+						<span class="px-2.5 py-0.5 rounded-full bg-primary text-primary-foreground font-bold text-[11px] animate-in fade-in duration-150 inline-flex items-center gap-1 shadow-xs">
+							<CheckIcon class="w-3 h-3" />
+							<span>{copyFeedback}</span>
+						</span>
+					{/if}
 				</div>
 			</div>
 
-			<!-- Quick Actions -->
-			<div class="flex items-center gap-2.5 flex-wrap">
+			<!-- Quick Actions Header Buttons -->
+			<div class="flex items-center gap-2 sm:gap-2.5 flex-wrap">
 				<button
 					onclick={() => (isAddModalOpen = true)}
-					class="px-4 py-2 rounded-xl bg-gradient-to-r from-rose-500 to-amber-500 hover:from-rose-600 hover:to-amber-600 text-white font-bold text-sm shadow-sm shadow-rose-500/15 transition-all flex items-center gap-1.5 cursor-pointer"
+					class="px-3.5 sm:px-4 py-2 rounded-xl bg-gradient-to-r from-rose-500 to-amber-500 hover:from-rose-600 hover:to-amber-600 text-white font-bold text-xs sm:text-sm shadow-sm shadow-rose-500/15 transition-all flex items-center gap-1.5 cursor-pointer active:scale-95"
 				>
-					<span>📸</span>
+					<CameraIcon class="w-4 h-4" />
 					<span>Add Item</span>
 				</button>
 
 				{#if s.status === 'ranking'}
 					<button
 						onclick={handleToggleReady}
-						class="px-4 py-2 rounded-xl border text-sm font-semibold transition-all cursor-pointer {myRanking?.isReady
+						class="px-3.5 sm:px-4 py-2 rounded-xl border text-xs sm:text-sm font-semibold transition-all cursor-pointer active:scale-95 flex items-center gap-1.5 {myRanking?.isReady
 							? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30'
 							: 'bg-secondary hover:bg-secondary/80 text-secondary-foreground border-border'}"
 					>
-						{myRanking?.isReady ? '✓ Ready (Click to edit)' : 'Mark as Ready'}
+						{#if myRanking?.isReady}
+							<CheckIcon class="w-3.5 h-3.5 text-emerald-500" />
+							<span>Ready (Tap to edit)</span>
+						{:else}
+							<span>Mark as Ready ({myRankedCount}/{totalItemCount})</span>
+						{/if}
 					</button>
 				{/if}
 
 				<button
 					onclick={handleToggleStatus}
-					class="px-4 py-2 rounded-xl text-sm font-bold transition-all cursor-pointer {s.status === 'ranking'
-						? 'bg-purple-600 hover:bg-purple-700 text-white shadow-sm shadow-purple-600/20'
+					class="px-3.5 sm:px-4 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all cursor-pointer active:scale-95 flex items-center gap-1.5 {s.status === 'ranking'
+						? allTastersReady
+							? 'bg-purple-600 hover:bg-purple-700 text-white shadow-md shadow-purple-600/30 ring-2 ring-purple-400/50 animate-pulse'
+							: 'bg-purple-600 hover:bg-purple-700 text-white shadow-sm shadow-purple-600/20'
 						: 'bg-muted hover:bg-muted/80 text-foreground border border-border'}"
 				>
-					{s.status === 'ranking' ? '🎉 Reveal Consensus' : '← Back to Ranking'}
+					{#if s.status === 'ranking'}
+						<EyeIcon class="w-4 h-4" />
+						<span>{allTastersReady ? 'Everyone Ready! Reveal Consensus' : 'Reveal Consensus'}</span>
+					{:else}
+						<span>← Back to Ranking</span>
+					{/if}
 				</button>
 			</div>
 		</div>
 
-		<!-- Participants Live Bar -->
-		<div class="flex items-center gap-2 overflow-x-auto pb-1 text-xs">
-			<span class="text-muted-foreground font-medium shrink-0">Tasters:</span>
-			{#each rankingList as r (r._id)}
-				<div
-					class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-xs font-semibold shrink-0 {r.isReady
-						? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20'
-						: 'bg-muted/60 text-muted-foreground border-border/50'}"
-				>
-					<span class="w-1.5 h-1.5 rounded-full {r.isReady ? 'bg-emerald-500' : 'bg-amber-400 animate-pulse'}"></span>
-					<span>{r.userName}</span>
-					{#if r.isReady}
-						<span>✓</span>
-					{/if}
+		<!-- Party Live Tasting & Readiness Progress (Ranking Mode) -->
+		{#if s.status === 'ranking'}
+			<div class="rounded-2xl border border-border/80 bg-card/60 backdrop-blur-xs p-3.5 sm:p-4 space-y-3 shadow-xs">
+				<div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+					<div class="space-y-1">
+						<div class="flex items-center gap-2">
+							<span class="text-xs font-bold uppercase tracking-wider text-muted-foreground">Tasting Progress</span>
+							<span class="text-xs font-bold text-foreground">
+								{myRankedCount} of {totalItemCount} items ranked ({myProgressPercent}%)
+							</span>
+						</div>
+						<!-- Visual Progress Bar -->
+						<div class="w-full sm:w-64 h-2 rounded-full bg-muted overflow-hidden">
+							<div
+								class="h-full rounded-full transition-all duration-300 bg-gradient-to-r from-amber-500 to-emerald-500"
+								style="width: {myProgressPercent}%;"
+							></div>
+						</div>
+					</div>
+
+					<div class="flex items-center gap-2 text-xs">
+						<span class="text-muted-foreground">Tasters:</span>
+						<span class="font-bold text-foreground">
+							{readyTastersCount} of {rankingList.length} ready
+						</span>
+					</div>
 				</div>
-			{/each}
-		</div>
+
+				<!-- Tasters Status Pills -->
+				<div class="flex items-center gap-2 overflow-x-auto pb-1 text-xs">
+					{#each rankingList as r (r._id)}
+						{@const isSelf = (clerk.user?.id && r.userId === clerk.user.id) || r.userId === localUserId}
+						{@const isHost = session.data?.hostId === r.userId}
+						{@const rPlacedCount = r.placements?.length ?? 0}
+						<div
+							class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-xs font-semibold shrink-0 {r.isReady
+								? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/25'
+								: 'bg-muted/60 text-muted-foreground border-border/50'}"
+						>
+							<span class="w-2 h-2 rounded-full {r.isReady ? 'bg-emerald-500' : 'bg-amber-400 animate-pulse'}"></span>
+							<span>{r.userName}{isSelf ? ' (You)' : ''}</span>
+							{#if isHost}
+								<span class="text-[10px] font-bold text-amber-600 dark:text-amber-400 bg-amber-500/15 px-1.5 py-0.5 rounded-md leading-none">Host</span>
+							{/if}
+							<span class="text-[10px] opacity-75">({rPlacedCount}/{totalItemCount})</span>
+							{#if r.isReady}
+								<CheckIcon class="w-3 h-3 text-emerald-500" />
+							{/if}
+						</div>
+					{/each}
+				</div>
+			</div>
+		{/if}
 
 		<!-- ============================================== -->
 		<!-- MODE 1: RANKING VIEW (Private Drag & Drop / Tap) -->
@@ -357,70 +667,110 @@ function onDropTier(e: DragEvent, tierId: string | null) {
 				<div class="rounded-2xl border border-border/80 bg-card overflow-hidden shadow-sm divide-y divide-border/60">
 					{#each s.tiers as tier (tier.id)}
 						{@const placedHere = itemList.filter((item) => myPlacementMap.get(item._id)?.tierId === tier.id)}
+						{@const isTierHovered = hoveredDropTier === tier.id}
 						<div
-							class="flex flex-col sm:flex-row items-stretch min-h-[90px] transition-colors"
-							ondragover={onDragOver}
+							class="flex flex-row items-stretch min-h-[84px] sm:min-h-[104px] transition-all duration-150 {isTierHovered
+								? 'ring-2 ring-inset bg-accent/25'
+								: 'hover:bg-muted/5'}"
+							data-dropzone-tier={tier.id}
+							ondragover={(e) => onDragOver(e, tier.id)}
+							ondragleave={onDragLeave}
 							ondrop={(e) => onDropTier(e, tier.id)}
 							role="region"
 							aria-label={`Tier ${tier.name}`}
+							style={isTierHovered
+								? `box-shadow: 0 0 24px -2px ${tier.color}35; border-color: ${tier.color};`
+								: ''}
 						>
-							<!-- Tier Label Badge -->
+							<!-- Tier Label Badge (compact on mobile, classic layout) -->
 							<div
-								class="w-full sm:w-28 shrink-0 flex items-center justify-center p-3 sm:p-4 font-black text-2xl sm:text-3xl text-white select-none shadow-inner"
+								class="w-14 sm:w-24 shrink-0 flex items-center justify-center p-2 sm:p-4 font-black text-2xl sm:text-3xl text-white select-none shadow-inner"
 								style="background-color: {tier.color};"
 							>
 								{tier.name}
 							</div>
 
 							<!-- Tier Item Dropzone -->
-							<div class="flex-1 p-3 flex flex-wrap items-center gap-3 bg-muted/10 min-h-[70px]">
-								{#if placedHere.length === 0}
-									<span class="text-xs text-muted-foreground/50 italic px-2">
-										Drag or tap items into {tier.name} tier
+							<div
+								role="list"
+								aria-label="{tier.name} tier items"
+								class="flex-1 p-2 sm:p-3 flex flex-wrap items-center gap-2 sm:gap-3 bg-muted/10 min-h-[76px]"
+							>
+								<!-- Dynamic Drop Indicator when dragged over -->
+								{#if isTierHovered}
+									<div
+										class="h-20 sm:h-24 w-20 sm:w-24 rounded-xl border-2 border-dashed flex flex-col items-center justify-center gap-1 font-bold text-[10px] sm:text-xs animate-pulse shrink-0 transition-all"
+										style="border-color: {tier.color}; color: {tier.color}; background-color: {tier.color}15;"
+									>
+										<svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+											<path d="M12 5v14"/>
+											<path d="m19 12-7 7-7-7"/>
+										</svg>
+										<span>Drop {tier.name}</span>
+									</div>
+								{/if}
+
+								{#if placedHere.length === 0 && !isTierHovered}
+									<span class="text-[11px] sm:text-xs text-muted-foreground/50 italic px-2 select-none">
+										Drag items into {tier.name}
 									</span>
 								{:else}
 									{#each placedHere as item (item._id)}
-										<!-- Placed Item Card -->
+										{@const isBeingDragged = activeDrag?.id === item._id}
+										<!-- Placed Item Card (Full-bleed photo, gradient caption, no tacked-on box) -->
 										<div
 											role="listitem"
 											draggable="true"
+											oncontextmenu={(e) => e.preventDefault()}
+											onpointerdown={(e) => handlePointerDown(e, item, tier.id)}
 											ondragstart={(e) => onDragStart(e, item._id)}
-											class="group relative w-24 sm:w-28 rounded-xl border border-border/80 bg-card overflow-hidden shadow-sm hover:shadow-md hover:border-primary/40 transition-all cursor-grab active:cursor-grabbing"
+											class="group relative w-20 sm:w-24 aspect-[4/5] rounded-2xl overflow-hidden shadow-md transition-all cursor-grab active:cursor-grabbing select-none shrink-0 border border-white/20 dark:border-white/10 ring-1 ring-black/5 dark:ring-white/5 bg-zinc-900 {isBeingDragged
+												? 'opacity-30 scale-95 border-2 border-dashed border-primary ring-2 ring-primary/40'
+												: 'hover:scale-[1.03] hover:shadow-lg hover:border-white/40'}"
+											style="touch-action: none; -webkit-touch-callout: none; -webkit-user-select: none;"
 										>
+											<!-- Full-Bleed Image Background -->
 											{#if item.imageUrl}
 												<img
 													src={item.imageUrl}
 													alt={item.name}
-													class="w-full h-20 sm:h-24 object-cover bg-muted"
+													draggable="false"
+													class="absolute inset-0 w-full h-full object-cover pointer-events-none select-none"
+													style="-webkit-touch-callout: none; -webkit-user-drag: none;"
 												/>
 											{:else}
-												<div class="w-full h-20 sm:h-24 bg-muted flex items-center justify-center text-xs text-muted-foreground">
+												<div class="absolute inset-0 bg-muted flex items-center justify-center text-xs text-muted-foreground select-none pointer-events-none">
 													No Photo
 												</div>
 											{/if}
-											<div class="p-1.5 bg-card/95">
-												<p class="text-[11px] font-bold line-clamp-1 leading-tight text-foreground">{item.name}</p>
+
+											<!-- Dark Gradient Scrim: Integrated lighting for permanent contrast in both dark/light modes -->
+											<div class="absolute inset-0 bg-gradient-to-t from-black/90 via-black/35 to-transparent pointer-events-none"></div>
+
+											<!-- Discreet Quick Unrank Button (top-left, thumb-friendly tap target) -->
+											<button
+												type="button"
+												onclick={(e) => {
+													e.stopPropagation();
+													handleMoveItem(item._id, null);
+												}}
+												class="absolute top-1.5 left-1.5 w-7 h-7 rounded-full bg-black/70 hover:bg-destructive active:scale-90 text-white flex items-center justify-center text-xs font-bold backdrop-blur-md border border-white/25 transition-all shadow-xs cursor-pointer z-10 opacity-80 group-hover:opacity-100"
+												title="Return to unranked pool"
+												aria-label="Return {item.name} to unranked pool"
+											>
+												<CloseIcon class="w-3 h-3 text-white" />
+											</button>
+
+											<!-- Drag Grip Handle Indicator (top-right) -->
+											<div class="absolute top-1.5 right-1.5 px-1.5 py-0.5 rounded-full bg-black/50 backdrop-blur-md text-white/80 text-[8px] font-mono leading-none pointer-events-none border border-white/10 opacity-70 group-hover:opacity-100 transition-opacity z-10">
+												⋮⋮
 											</div>
 
-											<!-- Mobile Quick Re-Tier Bar -->
-											<div class="flex items-center justify-center gap-0.5 p-1 bg-muted/40 border-t border-border/40">
-												{#each s.tiers as t (t.id)}
-													<button
-														onclick={() => handleMoveItem(item._id, t.id)}
-														class="w-4 h-4 rounded text-[9px] font-bold text-white flex items-center justify-center hover:scale-110 transition-transform cursor-pointer"
-														style="background-color: {t.color}; opacity: {t.id === tier.id ? '1' : '0.45'};"
-														title="Move to {t.name}"
-													>
-														{t.name}
-													</button>
-												{/each}
-												<button
-													onclick={() => handleMoveItem(item._id, null)}
-													class="w-4 h-4 rounded text-[9px] font-bold bg-muted-foreground/30 hover:bg-destructive hover:text-white text-foreground flex items-center justify-center transition-colors cursor-pointer"
-													title="Unrank"
-												>
-													✕
-												</button>
+											<!-- Integrated Bottom Caption (Never squared off, 2 lines of text) -->
+											<div class="absolute bottom-0 inset-x-0 p-1.5 pb-2 pointer-events-none">
+												<p class="text-[10px] sm:text-[11px] font-bold text-white line-clamp-2 leading-tight drop-shadow-sm">
+													{item.name}
+												</p>
 											</div>
 										</div>
 									{/each}
@@ -432,15 +782,19 @@ function onDropTier(e: DragEvent, tierId: string | null) {
 
 				<!-- Unranked Items Pool -->
 				<div
-					class="rounded-2xl border border-border/80 bg-card p-5 space-y-3"
-					ondragover={onDragOver}
+					class="rounded-2xl border bg-card p-4 sm:p-5 space-y-3 transition-all duration-150 {isUnrankedHovered
+						? 'border-primary ring-2 ring-primary/40 bg-primary/5'
+						: 'border-border/80'}"
+					data-dropzone-tier="__unranked__"
+					ondragover={(e) => onDragOver(e, null)}
+					ondragleave={onDragLeave}
 					ondrop={(e) => onDropTier(e, null)}
 					role="region"
 					aria-label="Unranked items pool"
 				>
 					<div class="flex items-center justify-between">
 						<div class="flex items-center gap-2">
-							<h3 class="font-bold text-base text-foreground">Unranked Tasting Items</h3>
+							<h3 class="font-bold text-sm sm:text-base text-foreground">Unranked Tasting Items</h3>
 							<span class="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground font-semibold">
 								{unrankedItems.length}
 							</span>
@@ -450,49 +804,89 @@ function onDropTier(e: DragEvent, tierId: string | null) {
 						</p>
 					</div>
 
+					<!-- Drop to Unrank Feedback Indicator -->
+					{#if isUnrankedHovered}
+						<div class="p-3 border-2 border-dashed border-primary/50 bg-primary/10 rounded-xl text-center flex items-center justify-center gap-2 text-xs font-bold text-primary animate-pulse">
+							<svg class="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+								<polyline points="9 14 4 9 9 4"/>
+								<path d="M20 20v-7a4 4 0 0 0-4-4H4"/>
+							</svg>
+							<span>Release to return item to unranked pool</span>
+						</div>
+					{/if}
+
 					{#if unrankedItems.length === 0}
-						<div class="p-8 border border-dashed border-border/70 rounded-xl text-center space-y-2">
-							<p class="text-sm font-semibold text-foreground">All items ranked! 🎉</p>
+						<div class="p-6 sm:p-8 border border-dashed border-border/70 rounded-xl text-center space-y-2 bg-muted/10">
+							<p class="text-sm font-bold text-foreground inline-flex items-center justify-center gap-1.5">
+								<CheckIcon class="w-4 h-4 text-emerald-500" />
+								<span>All items ranked!</span>
+							</p>
 							<p class="text-xs text-muted-foreground">
-								Click "Mark as Ready" when you're satisfied with your tiers.
+								Tap "Mark as Ready" above when you're satisfied with your tiers.
 							</p>
 						</div>
 					{:else}
-						<div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
+						<div
+							role="list"
+							aria-label="Unranked items list"
+							class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2.5 sm:gap-3"
+						>
 							{#each unrankedItems as item (item._id)}
+								{@const isBeingDragged = activeDrag?.id === item._id}
 								<div
 									role="listitem"
 									draggable="true"
+									oncontextmenu={(e) => e.preventDefault()}
+									onpointerdown={(e) => handlePointerDown(e, item, null)}
 									ondragstart={(e) => onDragStart(e, item._id)}
-									class="group relative rounded-xl border border-border bg-card overflow-hidden shadow-sm hover:shadow-md hover:border-primary/50 transition-all cursor-grab active:cursor-grabbing flex flex-col justify-between"
+									class="group relative rounded-2xl border border-border/80 bg-card overflow-hidden shadow-sm hover:shadow-md transition-all cursor-grab active:cursor-grabbing flex flex-col justify-between select-none {isBeingDragged
+										? 'opacity-30 scale-95 border-2 border-dashed border-primary/60'
+										: 'hover:border-primary/50'}"
+									style="touch-action: none; -webkit-touch-callout: none; -webkit-user-select: none;"
 								>
-									<div>
+									<!-- Media Top with Integrated Gradient Caption -->
+									<div class="relative aspect-[4/3] w-full bg-muted overflow-hidden">
 										{#if item.imageUrl}
 											<img
 												src={item.imageUrl}
 												alt={item.name}
-												class="w-full h-28 object-cover bg-muted"
+												draggable="false"
+												class="w-full h-full object-cover pointer-events-none select-none"
+												style="-webkit-touch-callout: none; -webkit-user-drag: none;"
 											/>
 										{:else}
-											<div class="w-full h-28 bg-muted flex items-center justify-center text-xs text-muted-foreground">
+											<div class="w-full h-full flex items-center justify-center text-xs text-muted-foreground select-none pointer-events-none">
 												No Photo
 											</div>
 										{/if}
-										<div class="p-2">
-											<p class="text-xs font-bold line-clamp-1 text-foreground">{item.name}</p>
+
+										<!-- Subtle Drag Indicator -->
+										<div class="absolute top-1.5 right-1.5 px-2 py-0.5 rounded-full bg-black/60 backdrop-blur-md text-white text-[9px] font-mono leading-none border border-white/10 pointer-events-none">
+											⋮⋮ Drag
+										</div>
+
+										<!-- Gradient Overlay Scrim with Item Name & Notes -->
+										<div class="absolute inset-0 bg-gradient-to-t from-black/90 via-black/30 to-transparent pointer-events-none flex flex-col justify-end p-2.5">
+											<p class="text-xs sm:text-sm font-bold text-white line-clamp-1 drop-shadow-sm">{item.name}</p>
 											{#if item.notes}
-												<p class="text-[10px] text-muted-foreground line-clamp-1 mt-0.5">{item.notes}</p>
+												<p class="text-[10px] text-white/80 line-clamp-1 font-medium mt-0.5">{item.notes}</p>
 											{/if}
 										</div>
 									</div>
 
-									<!-- Mobile Quick Tier Tap Buttons (A3 requirement) -->
-									<div class="p-1.5 bg-muted/30 border-t border-border/40 flex items-center justify-between gap-1">
+									<!-- Thumb-Friendly 2x3 Tier Tap Grid (Chunky 38px touch targets!) -->
+									<div class="p-1.5 bg-muted/40 dark:bg-zinc-900/50 border-t border-border/40 grid grid-cols-3 gap-1.5">
 										{#each s.tiers as t (t.id)}
 											<button
-												onclick={() => handleMoveItem(item._id, t.id)}
-												class="flex-1 h-6 rounded text-[10px] font-black text-white flex items-center justify-center hover:opacity-90 active:scale-95 transition-all shadow-xs cursor-pointer"
+												type="button"
+												onclick={(e) => {
+													e.stopPropagation();
+													handleMoveItem(item._id, t.id);
+												}}
+												class="h-9 sm:h-9.5 rounded-xl text-xs font-black text-white flex items-center justify-center active:scale-95 transition-all shadow-xs cursor-pointer border border-white/10 hover:brightness-110"
 												style="background-color: {t.color};"
+												title="Move to {t.name}"
+												aria-label="Move {item.name} to {t.name} tier"
 											>
 												{t.name}
 											</button>
@@ -503,6 +897,75 @@ function onDropTier(e: DragEvent, tierId: string | null) {
 						</div>
 					{/if}
 				</div>
+
+				<!-- Mobile Floating Quick Jump / Ready Pill -->
+				{#if unrankedItems.length > 0}
+					<div class="fixed bottom-[max(1rem,env(safe-area-inset-bottom))] left-1/2 -translate-x-1/2 z-40 sm:hidden">
+						<button
+							type="button"
+							onclick={() => {
+								document.querySelector('[data-dropzone-tier="__unranked__"]')?.scrollIntoView({ behavior: 'smooth' });
+							}}
+							class="px-4 py-2 rounded-full bg-primary text-primary-foreground font-bold text-xs shadow-lg shadow-primary/25 border border-primary-foreground/20 flex items-center gap-1.5 cursor-pointer active:scale-95"
+						>
+							<svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+								<path d="M12 5v14"/>
+								<path d="m19 12-7 7-7-7"/>
+							</svg>
+							<span>{unrankedItems.length} {unrankedItems.length === 1 ? 'item' : 'items'} to rank</span>
+						</button>
+					</div>
+				{:else if !myRanking?.isReady && totalItemCount > 0}
+					<div class="fixed bottom-[max(1rem,env(safe-area-inset-bottom))] left-1/2 -translate-x-1/2 z-40 sm:hidden">
+						<button
+							type="button"
+							onclick={handleToggleReady}
+							class="px-4 py-2 rounded-full bg-emerald-600 text-white font-bold text-xs shadow-lg shadow-emerald-600/30 border border-white/20 flex items-center gap-1.5 cursor-pointer active:scale-95 animate-bounce"
+						>
+							<CheckIcon class="w-3.5 h-3.5 text-white" />
+							<span>All ranked! Mark as Ready</span>
+						</button>
+					</div>
+				{/if}
+
+				<!-- Floating Drag Avatar for Touch / Pointer Gesture -->
+				{#if isTouchDragging && activeDrag}
+					<div
+						class="fixed pointer-events-none z-[9999] transition-transform duration-75 ease-out select-none will-change-transform"
+						style="left: {dragPointerPos.x}px; top: {dragPointerPos.y - 48}px; transform: translate3d(-50%, -50%, 0) scale(1.06) rotate(2deg);"
+					>
+						<div class="w-24 sm:w-28 aspect-[4/5] rounded-2xl border-2 border-primary bg-zinc-900 shadow-2xl shadow-black/60 overflow-hidden ring-4 ring-primary/30 relative">
+							{#if activeDrag.imageUrl}
+								<img
+									src={activeDrag.imageUrl}
+									alt={activeDrag.name}
+									class="absolute inset-0 w-full h-full object-cover pointer-events-none select-none"
+								/>
+							{:else}
+								<div class="absolute inset-0 bg-muted flex items-center justify-center select-none">
+									<TastingBottleIcon class="w-8 h-8 text-muted-foreground/60" />
+								</div>
+							{/if}
+							<div class="absolute inset-0 bg-gradient-to-t from-black/90 via-black/40 to-transparent pointer-events-none"></div>
+							<div class="absolute bottom-0 inset-x-0 p-2 pointer-events-none">
+								<p class="text-[11px] font-bold text-white line-clamp-2 leading-tight drop-shadow-sm">{activeDrag.name}</p>
+								<div class="flex items-center gap-1 mt-1">
+									<span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping"></span>
+									<span class="text-[9px] font-bold text-emerald-300">
+										{#if hoveredDropTier && hoveredDropTier !== '__unranked__'}
+											{@const targetTierObj = s.tiers.find((t) => t.id === hoveredDropTier)}
+											Drop in {targetTierObj ? targetTierObj.name : 'Tier'}
+										{:else if hoveredDropTier === '__unranked__'}
+											Drop to Unrank
+										{:else}
+											Dragging...
+										{/if}
+									</span>
+								</div>
+							</div>
+						</div>
+					</div>
+				{/if}
 			</div>
 		{/if}
 
@@ -512,30 +975,33 @@ function onDropTier(e: DragEvent, tierId: string | null) {
 		{#if s.status === 'revealed'}
 			<div class="space-y-6">
 				<!-- Tab Navigation -->
-				<div class="flex items-center gap-2 border-b border-border/60 pb-2">
+				<div class="flex items-center gap-2 border-b border-border/60 pb-2 overflow-x-auto">
 					<button
 						onclick={() => (activeTab = 'consensus')}
-						class="px-4 py-2 rounded-xl text-sm font-bold transition-all cursor-pointer {activeTab === 'consensus'
+						class="px-4 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all cursor-pointer shrink-0 inline-flex items-center gap-1.5 {activeTab === 'consensus'
 							? 'bg-purple-600 text-white shadow-sm'
 							: 'text-muted-foreground hover:text-foreground hover:bg-muted/50'}"
 					>
-						✨ Consensus Tier List
+						<TrophyIcon class="w-4 h-4" />
+						<span>Consensus Tier List</span>
 					</button>
 					<button
 						onclick={() => (activeTab = 'compare')}
-						class="px-4 py-2 rounded-xl text-sm font-bold transition-all cursor-pointer {activeTab === 'compare'
+						class="px-4 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all cursor-pointer shrink-0 inline-flex items-center gap-1.5 {activeTab === 'compare'
 							? 'bg-purple-600 text-white shadow-sm'
 							: 'text-muted-foreground hover:text-foreground hover:bg-muted/50'}"
 					>
-						👥 Compare Tasters
+						<UsersIcon class="w-4 h-4" />
+						<span>Compare Tasters</span>
 					</button>
 					<button
 						onclick={() => (activeTab = 'my')}
-						class="px-4 py-2 rounded-xl text-sm font-bold transition-all cursor-pointer {activeTab === 'my'
+						class="px-4 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all cursor-pointer shrink-0 inline-flex items-center gap-1.5 {activeTab === 'my'
 							? 'bg-purple-600 text-white shadow-sm'
 							: 'text-muted-foreground hover:text-foreground hover:bg-muted/50'}"
 					>
-						👤 My Board
+						<UserIcon class="w-4 h-4" />
+						<span>My Board</span>
 					</button>
 				</div>
 
@@ -546,22 +1012,30 @@ function onDropTier(e: DragEvent, tierId: string | null) {
 						{#if consensusData.spiciest}
 							{@const spicy = consensusData.spiciest}
 							<div class="rounded-2xl border border-rose-500/30 bg-rose-500/5 p-4 sm:p-5 flex items-center gap-4 relative overflow-hidden">
-								<div class="w-16 h-16 rounded-xl overflow-hidden shrink-0 bg-muted border border-rose-500/20">
+								<div class="w-16 h-16 rounded-xl overflow-hidden shrink-0 bg-muted border border-rose-500/20 select-none">
 									{#if spicy.imageUrl}
-										<img src={spicy.imageUrl} alt={spicy.name} class="w-full h-full object-cover" />
+										<img src={spicy.imageUrl} alt={spicy.name} draggable="false" class="w-full h-full object-cover pointer-events-none select-none" style="-webkit-touch-callout: none; -webkit-user-drag: none;" />
 									{/if}
 								</div>
-								<div class="space-y-1 min-w-0">
+								<div class="space-y-1 min-w-0 flex-1">
 									<div class="flex items-center gap-2">
-										<span class="text-xs font-black px-2 py-0.5 rounded-full bg-rose-500 text-white uppercase tracking-wider">
-											🌶️ Spiciest Debate
+										<span class="text-[10px] sm:text-xs font-black px-2.5 py-0.5 rounded-full bg-rose-500 text-white uppercase tracking-wider inline-flex items-center gap-1 shadow-xs">
+											<FlameIcon class="w-3.5 h-3.5 fill-white" />
+											<span>Spiciest Debate</span>
 										</span>
 									</div>
-									<h4 class="font-bold text-base text-foreground truncate">{spicy.name}</h4>
-									<div class="flex flex-wrap gap-2 text-xs text-muted-foreground pt-0.5">
+									<h4 class="font-bold text-sm sm:text-base text-foreground truncate">{spicy.name}</h4>
+									<div class="flex flex-wrap gap-1.5 text-xs pt-1">
 										{#each spicy.scores as score}
-											<span class="font-medium text-foreground">
-												{score.userName}: <strong class="text-rose-500">{score.tierId}</strong>
+											{@const voterTier = s.tiers.find((t) => t.id === score.tierId)}
+											<span class="inline-flex items-center gap-1 font-semibold text-foreground px-2 py-0.5 rounded-md bg-muted/80 border border-border/50 text-[11px]">
+												<span>{score.userName}:</span>
+												<span
+													class="px-1.5 py-0.2 rounded text-[10px] font-black text-white"
+													style="background-color: {voterTier?.color ?? '#888'};"
+												>
+													{score.tierId}
+												</span>
 											</span>
 										{/each}
 									</div>
@@ -573,18 +1047,19 @@ function onDropTier(e: DragEvent, tierId: string | null) {
 						{#if consensusData.mindMeld}
 							{@const mm = consensusData.mindMeld}
 							<div class="rounded-2xl border border-emerald-500/30 bg-emerald-500/5 p-4 sm:p-5 flex items-center gap-4 relative overflow-hidden">
-								<div class="w-16 h-16 rounded-xl overflow-hidden shrink-0 bg-muted border border-emerald-500/20">
+								<div class="w-16 h-16 rounded-xl overflow-hidden shrink-0 bg-muted border border-emerald-500/20 select-none">
 									{#if mm.imageUrl}
-										<img src={mm.imageUrl} alt={mm.name} class="w-full h-full object-cover" />
+										<img src={mm.imageUrl} alt={mm.name} draggable="false" class="w-full h-full object-cover pointer-events-none select-none" style="-webkit-touch-callout: none; -webkit-user-drag: none;" />
 									{/if}
 								</div>
-								<div class="space-y-1 min-w-0">
+								<div class="space-y-1 min-w-0 flex-1">
 									<div class="flex items-center gap-2">
-										<span class="text-xs font-black px-2 py-0.5 rounded-full bg-emerald-500 text-white uppercase tracking-wider">
-											🤝 Mind Meld
+										<span class="text-[10px] sm:text-xs font-black px-2.5 py-0.5 rounded-full bg-emerald-500 text-white uppercase tracking-wider inline-flex items-center gap-1 shadow-xs">
+											<HandshakeIcon class="w-3.5 h-3.5" />
+											<span>Mind Meld</span>
 										</span>
 									</div>
-									<h4 class="font-bold text-base text-foreground truncate">{mm.name}</h4>
+									<h4 class="font-bold text-sm sm:text-base text-foreground truncate">{mm.name}</h4>
 									<div class="text-xs text-muted-foreground pt-0.5">
 										Unanimous agreement: <strong class="text-emerald-500">{mm.consensusTierName ?? ''} Tier</strong> across all tasters!
 									</div>
@@ -601,32 +1076,35 @@ function onDropTier(e: DragEvent, tierId: string | null) {
 							{@const itemsInTier = (consensusData?.consensusItems ?? []).filter(
 								(item) => item.consensusTierId === tier.id
 							)}
-							<div class="flex flex-col sm:flex-row items-stretch min-h-[90px]">
+							<div class="flex flex-row items-stretch min-h-[84px] sm:min-h-[96px]">
 								<!-- Tier Label -->
 								<div
-									class="w-full sm:w-28 shrink-0 flex items-center justify-center p-3 sm:p-4 font-black text-2xl sm:text-3xl text-white select-none shadow-inner"
+									class="w-14 sm:w-24 shrink-0 flex items-center justify-center p-2 sm:p-4 font-black text-2xl sm:text-3xl text-white select-none shadow-inner"
 									style="background-color: {tier.color};"
 								>
 									{tier.name}
 								</div>
 
 								<!-- Tier Items -->
-								<div class="flex-1 p-3 flex flex-wrap items-center gap-3 bg-muted/10 min-h-[70px]">
+								<div class="flex-1 p-2 sm:p-3 flex flex-wrap items-center gap-2 sm:gap-3 bg-muted/10 min-h-[70px]">
 									{#if itemsInTier.length === 0}
 										<span class="text-xs text-muted-foreground/40 italic px-2">No consensus items</span>
 									{:else}
 										{#each itemsInTier as item (item._id)}
-											<div class="group relative w-24 sm:w-28 rounded-xl border border-border bg-card overflow-hidden shadow-sm flex flex-col justify-between">
-												<div>
-													{#if item.imageUrl}
-														<img src={item.imageUrl} alt={item.name} class="w-full h-20 sm:h-24 object-cover bg-muted" />
-													{/if}
-													<div class="p-1.5">
-														<p class="text-[11px] font-bold line-clamp-1 leading-tight text-foreground">{item.name}</p>
+											<div class="group relative w-20 sm:w-24 aspect-[4/5] rounded-2xl overflow-hidden shadow-md border border-white/20 dark:border-white/10 ring-1 ring-black/5 dark:ring-white/5 bg-zinc-900 shrink-0">
+												{#if item.imageUrl}
+													<img src={item.imageUrl} alt={item.name} draggable="false" class="absolute inset-0 w-full h-full object-cover pointer-events-none select-none" style="-webkit-touch-callout: none; -webkit-user-drag: none;" />
+												{:else}
+													<div class="absolute inset-0 bg-muted flex items-center justify-center text-xs text-muted-foreground select-none">
+														No Photo
 													</div>
-												</div>
-												<div class="p-1 bg-muted/40 text-[9px] text-muted-foreground text-center border-t border-border/30">
-													Score: <strong class="text-foreground">{item.averageScore.toFixed(1)}</strong>
+												{/if}
+												<div class="absolute inset-0 bg-gradient-to-t from-black/90 via-black/35 to-transparent pointer-events-none"></div>
+												<div class="absolute bottom-0 inset-x-0 p-1.5 pb-2 pointer-events-none space-y-1">
+													<p class="text-[10px] sm:text-[11px] font-bold text-white line-clamp-2 leading-tight drop-shadow-sm">{item.name}</p>
+													<div class="inline-flex items-center px-1.5 py-0.5 rounded-full bg-white/20 backdrop-blur-md text-[9px] font-bold text-white border border-white/20">
+														Score: {item.averageScore.toFixed(1)}
+													</div>
 												</div>
 											</div>
 										{/each}
@@ -644,7 +1122,7 @@ function onDropTier(e: DragEvent, tierId: string | null) {
 							{#each rankingList as r, idx (r._id)}
 								<button
 									onclick={() => (compareUserIndex = idx)}
-									class="px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer {compareUserIndex === idx
+									class="px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer shrink-0 {compareUserIndex === idx
 										? 'bg-primary text-primary-foreground shadow-sm'
 										: 'bg-muted text-muted-foreground hover:text-foreground'}"
 								>
@@ -659,24 +1137,29 @@ function onDropTier(e: DragEvent, tierId: string | null) {
 							<div class="rounded-2xl border border-border/80 bg-card overflow-hidden shadow-sm divide-y divide-border/60">
 								{#each s.tiers as tier (tier.id)}
 									{@const placed = itemList.filter((item) => targetPlacements.get(item._id) === tier.id)}
-									<div class="flex flex-col sm:flex-row items-stretch min-h-[90px]">
+									<div class="flex flex-row items-stretch min-h-[84px] sm:min-h-[96px]">
 										<div
-											class="w-full sm:w-28 shrink-0 flex items-center justify-center p-3 sm:p-4 font-black text-2xl sm:text-3xl text-white select-none shadow-inner"
+											class="w-14 sm:w-24 shrink-0 flex items-center justify-center p-2 sm:p-4 font-black text-2xl sm:text-3xl text-white select-none shadow-inner"
 											style="background-color: {tier.color};"
 										>
 											{tier.name}
 										</div>
-										<div class="flex-1 p-3 flex flex-wrap items-center gap-3 bg-muted/10 min-h-[70px]">
+										<div class="flex-1 p-2 sm:p-3 flex flex-wrap items-center gap-2 sm:gap-3 bg-muted/10 min-h-[70px]">
 											{#if placed.length === 0}
 												<span class="text-xs text-muted-foreground/40 italic px-2">No items</span>
 											{:else}
 												{#each placed as item (item._id)}
-													<div class="w-24 sm:w-28 rounded-xl border border-border bg-card overflow-hidden shadow-sm">
+													<div class="group relative w-20 sm:w-24 aspect-[4/5] rounded-2xl overflow-hidden shadow-md border border-white/20 dark:border-white/10 ring-1 ring-black/5 dark:ring-white/5 bg-zinc-900 shrink-0">
 														{#if item.imageUrl}
-															<img src={item.imageUrl} alt={item.name} class="w-full h-20 sm:h-24 object-cover bg-muted" />
+															<img src={item.imageUrl} alt={item.name} draggable="false" class="absolute inset-0 w-full h-full object-cover pointer-events-none select-none" style="-webkit-touch-callout: none; -webkit-user-drag: none;" />
+														{:else}
+															<div class="absolute inset-0 bg-muted flex items-center justify-center text-xs text-muted-foreground select-none">
+																No Photo
+															</div>
 														{/if}
-														<div class="p-1.5">
-															<p class="text-[11px] font-bold line-clamp-1 leading-tight text-foreground">{item.name}</p>
+														<div class="absolute inset-0 bg-gradient-to-t from-black/90 via-black/35 to-transparent pointer-events-none"></div>
+														<div class="absolute bottom-0 inset-x-0 p-1.5 pb-2 pointer-events-none">
+															<p class="text-[10px] sm:text-[11px] font-bold text-white line-clamp-2 leading-tight drop-shadow-sm">{item.name}</p>
 														</div>
 													</div>
 												{/each}
@@ -694,24 +1177,29 @@ function onDropTier(e: DragEvent, tierId: string | null) {
 					<div class="rounded-2xl border border-border/80 bg-card overflow-hidden shadow-sm divide-y divide-border/60">
 						{#each s.tiers as tier (tier.id)}
 							{@const placed = itemList.filter((item) => myPlacementMap.get(item._id)?.tierId === tier.id)}
-							<div class="flex flex-col sm:flex-row items-stretch min-h-[90px]">
+							<div class="flex flex-row items-stretch min-h-[84px] sm:min-h-[96px]">
 								<div
-									class="w-full sm:w-28 shrink-0 flex items-center justify-center p-3 sm:p-4 font-black text-2xl sm:text-3xl text-white select-none shadow-inner"
+									class="w-14 sm:w-24 shrink-0 flex items-center justify-center p-2 sm:p-4 font-black text-2xl sm:text-3xl text-white select-none shadow-inner"
 									style="background-color: {tier.color};"
 								>
 									{tier.name}
 								</div>
-								<div class="flex-1 p-3 flex flex-wrap items-center gap-3 bg-muted/10 min-h-[70px]">
+								<div class="flex-1 p-2 sm:p-3 flex flex-wrap items-center gap-2 sm:gap-3 bg-muted/10 min-h-[70px]">
 									{#if placed.length === 0}
 										<span class="text-xs text-muted-foreground/40 italic px-2">No items</span>
 									{:else}
 										{#each placed as item (item._id)}
-											<div class="w-24 sm:w-28 rounded-xl border border-border bg-card overflow-hidden shadow-sm">
+											<div class="group relative w-20 sm:w-24 aspect-[4/5] rounded-2xl overflow-hidden shadow-md border border-white/20 dark:border-white/10 ring-1 ring-black/5 dark:ring-white/5 bg-zinc-900 shrink-0">
 												{#if item.imageUrl}
-													<img src={item.imageUrl} alt={item.name} class="w-full h-20 sm:h-24 object-cover bg-muted" />
+													<img src={item.imageUrl} alt={item.name} draggable="false" class="absolute inset-0 w-full h-full object-cover pointer-events-none select-none" style="-webkit-touch-callout: none; -webkit-user-drag: none;" />
+												{:else}
+													<div class="absolute inset-0 bg-muted flex items-center justify-center text-xs text-muted-foreground select-none">
+														No Photo
+													</div>
 												{/if}
-												<div class="p-1.5">
-													<p class="text-[11px] font-bold line-clamp-1 leading-tight text-foreground">{item.name}</p>
+												<div class="absolute inset-0 bg-gradient-to-t from-black/90 via-black/35 to-transparent pointer-events-none"></div>
+												<div class="absolute bottom-0 inset-x-0 p-1.5 pb-2 pointer-events-none">
+													<p class="text-[10px] sm:text-[11px] font-bold text-white line-clamp-2 leading-tight drop-shadow-sm">{item.name}</p>
 												</div>
 											</div>
 										{/each}
@@ -730,12 +1218,17 @@ function onDropTier(e: DragEvent, tierId: string | null) {
 		<div class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-background/80 backdrop-blur-sm">
 			<div class="w-full max-w-md rounded-2xl border border-border bg-card p-6 shadow-xl space-y-5 animate-in fade-in-0 zoom-in-95">
 				<div class="flex items-center justify-between">
-					<h3 class="text-lg font-bold tracking-tight">📸 Add Next Tasting Item</h3>
+					<h3 class="text-lg font-bold tracking-tight inline-flex items-center gap-2">
+						<CameraIcon class="w-5 h-5 text-rose-500" />
+						<span>Add Next Tasting Item</span>
+					</h3>
 					<button
+						type="button"
 						onclick={() => (isAddModalOpen = false)}
-						class="text-muted-foreground hover:text-foreground p-1 rounded-lg"
+						class="text-muted-foreground hover:text-foreground p-1.5 rounded-lg hover:bg-muted transition-colors cursor-pointer"
+						aria-label="Close dialog"
 					>
-						✕
+						<CloseIcon class="w-4 h-4" />
 					</button>
 				</div>
 
@@ -746,8 +1239,8 @@ function onDropTier(e: DragEvent, tierId: string | null) {
 							Photo (Required)
 						</span>
 						{#if previewUrl}
-							<div class="relative rounded-xl overflow-hidden border border-border h-48 bg-muted">
-								<img src={previewUrl} alt="Preview" class="w-full h-full object-cover" />
+							<div class="relative rounded-xl overflow-hidden border border-border h-48 bg-muted select-none">
+								<img src={previewUrl} alt="Preview" draggable="false" class="w-full h-full object-cover select-none pointer-events-none" style="-webkit-touch-callout: none; -webkit-user-drag: none;" />
 								<button
 									type="button"
 									onclick={() => fileInputRef?.click()}
@@ -762,7 +1255,7 @@ function onDropTier(e: DragEvent, tierId: string | null) {
 								onclick={() => fileInputRef?.click()}
 								class="w-full h-36 border-2 border-dashed border-border hover:border-primary/50 rounded-xl flex flex-col items-center justify-center gap-2 bg-muted/20 hover:bg-muted/30 transition-colors cursor-pointer"
 							>
-								<span class="text-3xl">📷</span>
+								<CameraIcon class="w-8 h-8 text-muted-foreground/70" />
 								<span class="text-sm font-semibold text-foreground">Snap Photo or Choose Image</span>
 								<span class="text-xs text-muted-foreground">Syncs instantly to both screens</span>
 							</button>
@@ -830,35 +1323,69 @@ function onDropTier(e: DragEvent, tierId: string | null) {
 		</div>
 	{/if}
 
-	<!-- Name Edit Modal -->
+	<!-- Name Configuration / Blocking Required Modal -->
 	{#if isNameModalOpen}
-		<div class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-background/80 backdrop-blur-sm">
+		<div
+			class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-background/80 backdrop-blur-sm"
+			role="presentation"
+			onclick={(e) => {
+				if (!isNameRequired && e.target === e.currentTarget) {
+					isNameModalOpen = false;
+				}
+			}}
+		>
 			<div class="w-full max-w-sm rounded-2xl border border-border bg-card p-6 shadow-xl space-y-4 animate-in fade-in-0 zoom-in-95">
-				<h3 class="text-base font-bold tracking-tight">Change Your Taster Name</h3>
-				<div>
-					<input
-						type="text"
-						bind:value={tempUserName}
-						placeholder="Your Name (e.g. Kerianne, Bryant)"
-						class="w-full h-10 px-3 rounded-xl border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary"
-					/>
+				<div class="space-y-1">
+					<div class="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center text-primary mb-2">
+						<UserIcon class="w-5 h-5 text-primary" />
+					</div>
+					<h3 class="text-base font-bold tracking-tight text-foreground">
+						{isNameRequired ? 'Welcome to the Tasting!' : 'Change Your Taster Name'}
+					</h3>
+					<p class="text-xs text-muted-foreground leading-relaxed">
+						{isNameRequired
+							? 'Please enter your name so other tasters at the table know whose ratings these are.'
+							: 'Update your display name for this tasting session.'}
+					</p>
 				</div>
-				<div class="flex items-center justify-end gap-2 pt-1">
-					<button
-						type="button"
-						onclick={() => (isNameModalOpen = false)}
-						class="px-3 py-1.5 rounded-lg text-xs font-medium text-muted-foreground hover:bg-muted"
-					>
-						Cancel
-					</button>
-					<button
-						type="button"
-						onclick={saveNewName}
-						class="px-4 py-1.5 rounded-lg bg-primary text-primary-foreground text-xs font-bold"
-					>
-						Save Name
-					</button>
-				</div>
+
+				<form
+					onsubmit={(e) => {
+						e.preventDefault();
+						saveNewName();
+					}}
+					class="space-y-4"
+				>
+					<div>
+						<label for="taster-name-input" class="sr-only">Taster Name</label>
+						<input
+							id="taster-name-input"
+							type="text"
+							bind:value={tempUserName}
+							placeholder="Enter your name (e.g. Alex, Sam)"
+							class="w-full h-10 px-3 rounded-xl border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary"
+							required
+						/>
+					</div>
+					<div class="flex items-center justify-end gap-2 pt-1">
+						{#if !isNameRequired}
+							<button
+								type="button"
+								onclick={() => (isNameModalOpen = false)}
+								class="px-3 py-1.5 rounded-lg text-xs font-medium text-muted-foreground hover:bg-muted cursor-pointer"
+							>
+								Cancel
+							</button>
+						{/if}
+						<button
+							type="submit"
+							disabled={!tempUserName.trim()}
+							class="px-4 py-2 rounded-xl bg-gradient-to-r from-rose-500 to-amber-500 hover:from-rose-600 hover:to-amber-600 text-white text-xs font-bold shadow-sm transition-all disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+						>
+							{isNameRequired ? 'Join Tasting' : 'Save Name'}
+						</button>
+					</div>
+				</form>
 			</div>
 		</div>
 	{/if}

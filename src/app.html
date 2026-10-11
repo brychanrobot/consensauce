@@ -2,8 +2,29 @@
 <html lang="en">
 	<head>
 		<meta charset="utf-8" />
-		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 		<meta name="text-scale" content="scale" />
+		<meta name="theme-color" content="#f43f5e" />
+		<meta name="mobile-web-app-capable" content="yes" />
+		<meta name="apple-mobile-web-app-capable" content="yes" />
+		<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+		<meta name="apple-mobile-web-app-title" content="Consensauce" />
+		<link rel="manifest" href="/manifest.webmanifest" />
+		<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+		<link rel="icon" type="image/svg+xml" href="/icons/favicon.svg" />
+		<script>
+			try {
+				const theme = localStorage.getItem('consensauce_theme') || localStorage.getItem('tears_theme') || 'system';
+				const systemDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+				if (theme === 'dark' || (theme === 'system' && systemDark)) {
+					document.documentElement.classList.add('dark');
+					document.documentElement.style.colorScheme = 'dark';
+				} else {
+					document.documentElement.classList.remove('dark');
+					document.documentElement.style.colorScheme = 'light';
+				}
+			} catch (_) {}
+		</script>
 		%sveltekit.head%
 	</head>
 	<body data-sveltekit-preload-data="hover">
