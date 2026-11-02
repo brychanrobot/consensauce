@@ -459,6 +459,7 @@ function handlePointerDown(e: PointerEvent, item: ItemDetailData, originTierId: 
   if (target?.closest('button, a, input, select, textarea')) return;
 
   startPointerPos = { x: e.clientX, y: e.clientY };
+  let currentPointerPos = { x: e.clientX, y: e.clientY };
   currentPointerId = e.pointerId;
   dragCandidate = {
     id: item._id,
@@ -472,9 +473,9 @@ function handlePointerDown(e: PointerEvent, item: ItemDetailData, originTierId: 
   let longPressTimer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
     isTouchDragging = true;
     activeDrag = dragCandidate;
-    dragPointerPos = { x: startPointerPos.x, y: startPointerPos.y };
+    dragPointerPos = { x: currentPointerPos.x, y: currentPointerPos.y };
     if (typeof navigator !== 'undefined' && navigator.vibrate) {
-      navigator.vibrate(35);
+      navigator.vibrate(15);
     }
     longPressTimer = null;
   }, 260);
@@ -493,6 +494,7 @@ function handlePointerDown(e: PointerEvent, item: ItemDetailData, originTierId: 
   function onPointerMove(moveEvent: PointerEvent) {
     if (moveEvent.pointerId !== currentPointerId || !dragCandidate) return;
 
+    currentPointerPos = { x: moveEvent.clientX, y: moveEvent.clientY };
     const dx = moveEvent.clientX - startPointerPos.x;
     const dy = moveEvent.clientY - startPointerPos.y;
     const distSq = dx * dx + dy * dy;
@@ -535,7 +537,7 @@ function handlePointerDown(e: PointerEvent, item: ItemDetailData, originTierId: 
       if (targetTier !== activeDrag.originTierId) {
         handleMoveItem(activeDrag.id, targetTier);
         if (typeof navigator !== 'undefined' && navigator.vibrate) {
-          navigator.vibrate([15, 30, 20]);
+          navigator.vibrate(15);
         }
       }
     } else if (!wasDragging && distSq <= 64) {
@@ -812,8 +814,8 @@ function onDropTier(e: DragEvent, tierId: string | null) {
 						{@const placedHere = itemList.filter((item) => myPlacementMap.get(item._id)?.tierId === tier.id)}
 						{@const isTierHovered = hoveredDropTier === tier.id}
 						<div
-							class="flex flex-row items-stretch min-h-[84px] sm:min-h-[104px] transition-all duration-150 {isTierHovered
-								? 'ring-2 ring-inset bg-accent/25'
+							class="flex flex-row items-stretch min-h-[84px] sm:min-h-[104px] transition-colors duration-150 {isTierHovered
+								? 'bg-accent/25'
 								: 'hover:bg-muted/5'}"
 							data-dropzone-tier={tier.id}
 							ondragover={(e) => onDragOver(e, tier.id)}
@@ -822,7 +824,7 @@ function onDropTier(e: DragEvent, tierId: string | null) {
 							role="region"
 							aria-label={`Tier ${tier.name}`}
 							style={isTierHovered
-								? `box-shadow: 0 0 24px -2px ${tier.color}35; border-color: ${tier.color};`
+								? `box-shadow: inset 0 0 0 2px ${tier.color}; background-color: ${tier.color}15;`
 								: ''}
 						>
 							<!-- Tier Label Badge (compact on mobile, classic layout) -->
@@ -839,41 +841,28 @@ function onDropTier(e: DragEvent, tierId: string | null) {
 								aria-label="{tier.name} tier items"
 								class="flex-1 p-2 sm:p-3 flex flex-wrap items-center gap-2 sm:gap-3 bg-muted/10 min-h-[76px]"
 							>
-								<!-- Dynamic Drop Indicator when dragged over -->
-								{#if isTierHovered}
-									<div
-										class="h-20 sm:h-24 w-20 sm:w-24 rounded-xl border-2 border-dashed flex flex-col items-center justify-center gap-1 font-bold text-[10px] sm:text-xs animate-pulse shrink-0 transition-all"
-										style="border-color: {tier.color}; color: {tier.color}; background-color: {tier.color}15;"
-									>
-										<svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-											<path d="M12 5v14"/>
-											<path d="m19 12-7 7-7-7"/>
-										</svg>
-										<span>Drop {tier.name}</span>
-									</div>
+								{#if placedHere.length === 0}
+									<span class="text-[11px] sm:text-xs italic px-2 select-none transition-colors {isTierHovered ? 'text-foreground font-semibold' : 'text-muted-foreground/50'}">
+										{isTierHovered ? `Drop here for ${tier.name}` : `Drag items into ${tier.name}`}
+									</span>
 								{/if}
 
-								{#if placedHere.length === 0 && !isTierHovered}
-									<span class="text-[11px] sm:text-xs text-muted-foreground/50 italic px-2 select-none">
-										Drag items into {tier.name}
-									</span>
-								{:else}
-									{#each placedHere as item (item._id)}
-										{@const isBeingDragged = activeDrag?.id === item._id}
-										<!-- Placed Item Card (Full-bleed photo, gradient caption, no tacked-on box) -->
-										<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_noninteractive_element_interactions -->
-										<div
-											role="listitem"
-											draggable="true"
-											onclick={(e) => handleCardClick(e, item)}
-											oncontextmenu={(e) => e.preventDefault()}
-											onpointerdown={(e) => handlePointerDown(e, item, tier.id)}
-											ondragstart={(e) => onDragStart(e, item._id)}
-											class="group relative w-20 sm:w-24 aspect-[4/5] rounded-2xl overflow-hidden shadow-md transition-all cursor-pointer active:cursor-grabbing select-none shrink-0 border border-white/20 dark:border-white/10 ring-1 ring-black/5 dark:ring-white/5 bg-zinc-900 {isBeingDragged
-												? 'opacity-30 scale-95 border-2 border-dashed border-primary ring-2 ring-primary/40'
-												: 'hover:scale-[1.03] hover:shadow-lg hover:border-white/40'}"
-											style="touch-action: pan-y; -webkit-touch-callout: none; -webkit-user-select: none;"
-										>
+								{#each placedHere as item (item._id)}
+									{@const isBeingDragged = activeDrag?.id === item._id}
+									<!-- Placed Item Card (Full-bleed photo, gradient caption, no tacked-on box) -->
+									<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_noninteractive_element_interactions -->
+									<div
+										role="listitem"
+										draggable="true"
+										onclick={(e) => handleCardClick(e, item)}
+										oncontextmenu={(e) => e.preventDefault()}
+										onpointerdown={(e) => handlePointerDown(e, item, tier.id)}
+										ondragstart={(e) => onDragStart(e, item._id)}
+										class="group relative w-20 sm:w-24 aspect-[4/5] rounded-2xl overflow-hidden shadow-md transition-opacity duration-150 cursor-pointer active:cursor-grabbing select-none shrink-0 border border-white/20 dark:border-white/10 ring-1 ring-black/5 dark:ring-white/5 bg-zinc-900 {isBeingDragged
+											? 'opacity-35'
+											: 'opacity-100 hover:scale-[1.02] hover:shadow-lg hover:border-white/40'}"
+										style="touch-action: pan-y; -webkit-touch-callout: none; -webkit-user-select: none;"
+									>
 											<!-- Full-Bleed Image Background -->
 											{#if item.imageUrl}
 												<img
@@ -919,7 +908,6 @@ function onDropTier(e: DragEvent, tierId: string | null) {
 											</div>
 										</div>
 									{/each}
-								{/if}
 							</div>
 						</div>
 					{/each}
@@ -927,7 +915,7 @@ function onDropTier(e: DragEvent, tierId: string | null) {
 
 				<!-- Unranked Items Pool -->
 				<div
-					class="rounded-2xl border bg-card p-4 sm:p-5 space-y-3 transition-all duration-150 {isUnrankedHovered
+					class="rounded-2xl border bg-card p-4 sm:p-5 space-y-3 transition-colors duration-150 {isUnrankedHovered
 						? 'border-primary ring-2 ring-primary/40 bg-primary/5'
 						: 'border-border/80'}"
 					data-dropzone-tier="__unranked__"
@@ -939,7 +927,9 @@ function onDropTier(e: DragEvent, tierId: string | null) {
 				>
 					<div class="flex items-center justify-between">
 						<div class="flex items-center gap-2">
-							<h3 class="font-bold text-sm sm:text-base text-foreground">Unranked Tasting Items</h3>
+							<h3 class="font-bold text-sm sm:text-base text-foreground transition-colors {isUnrankedHovered ? 'text-primary' : ''}">
+								{isUnrankedHovered ? 'Drop to return to unranked' : 'Unranked Tasting Items'}
+							</h3>
 							<span class="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground font-semibold">
 								{unrankedItems.length}
 							</span>
@@ -948,17 +938,6 @@ function onDropTier(e: DragEvent, tierId: string | null) {
 							Tap tier buttons or drag onto the board above
 						</p>
 					</div>
-
-					<!-- Drop to Unrank Feedback Indicator -->
-					{#if isUnrankedHovered}
-						<div class="p-3 border-2 border-dashed border-primary/50 bg-primary/10 rounded-xl text-center flex items-center justify-center gap-2 text-xs font-bold text-primary animate-pulse">
-							<svg class="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-								<polyline points="9 14 4 9 9 4"/>
-								<path d="M20 20v-7a4 4 0 0 0-4-4H4"/>
-							</svg>
-							<span>Release to return item to unranked pool</span>
-						</div>
-					{/if}
 
 					{#if unrankedItems.length === 0}
 						<div class="p-6 sm:p-8 border border-dashed border-border/70 rounded-xl text-center space-y-2 bg-muted/10">
@@ -986,9 +965,9 @@ function onDropTier(e: DragEvent, tierId: string | null) {
 									oncontextmenu={(e) => e.preventDefault()}
 									onpointerdown={(e) => handlePointerDown(e, item, null)}
 									ondragstart={(e) => onDragStart(e, item._id)}
-									class="group relative rounded-2xl border border-border/80 bg-card overflow-hidden shadow-sm hover:shadow-md transition-all cursor-pointer active:cursor-grabbing flex flex-col justify-between select-none {isBeingDragged
-										? 'opacity-30 scale-95 border-2 border-dashed border-primary/60'
-										: 'hover:border-primary/50'}"
+									class="group relative rounded-2xl border border-border/80 bg-card overflow-hidden shadow-sm hover:shadow-md transition-opacity duration-150 cursor-pointer active:cursor-grabbing flex flex-col justify-between select-none {isBeingDragged
+										? 'opacity-35'
+										: 'opacity-100 hover:border-primary/50'}"
 									style="touch-action: pan-y; -webkit-touch-callout: none; -webkit-user-select: none;"
 								>
 									<!-- Media Top with Integrated Gradient Caption -->
@@ -1078,10 +1057,10 @@ function onDropTier(e: DragEvent, tierId: string | null) {
 				<!-- Floating Drag Avatar for Touch / Pointer Gesture -->
 				{#if isTouchDragging && activeDrag}
 					<div
-						class="fixed pointer-events-none z-[9999] transition-transform duration-75 ease-out select-none will-change-transform"
-						style="left: {dragPointerPos.x}px; top: {dragPointerPos.y - 48}px; transform: translate3d(-50%, -50%, 0) scale(1.06) rotate(2deg);"
+						class="fixed top-0 left-0 pointer-events-none z-[9999] select-none will-change-transform"
+						style="transform: translate3d({dragPointerPos.x}px, {dragPointerPos.y - 28}px, 0) translate(-50%, -50%) scale(1.05);"
 					>
-						<div class="w-24 sm:w-28 aspect-[4/5] rounded-2xl border-2 border-primary bg-zinc-900 shadow-2xl shadow-black/60 overflow-hidden ring-4 ring-primary/30 relative">
+						<div class="w-22 sm:w-26 aspect-[4/5] rounded-2xl border border-white/30 bg-zinc-900 shadow-2xl shadow-black/70 overflow-hidden relative">
 							{#if activeDrag.imageUrl}
 								<img
 									src={activeDrag.imageUrl}
@@ -1093,22 +1072,9 @@ function onDropTier(e: DragEvent, tierId: string | null) {
 									<TastingBottleIcon class="w-8 h-8 text-muted-foreground/60" />
 								</div>
 							{/if}
-							<div class="absolute inset-0 bg-gradient-to-t from-black/90 via-black/40 to-transparent pointer-events-none"></div>
+							<div class="absolute inset-0 bg-gradient-to-t from-black/85 via-black/25 to-transparent pointer-events-none"></div>
 							<div class="absolute bottom-0 inset-x-0 p-2 pointer-events-none">
-								<p class="text-[11px] font-bold text-white line-clamp-2 leading-tight drop-shadow-sm">{activeDrag.name}</p>
-								<div class="flex items-center gap-1 mt-1">
-									<span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping"></span>
-									<span class="text-[9px] font-bold text-emerald-300">
-										{#if hoveredDropTier && hoveredDropTier !== '__unranked__'}
-											{@const targetTierObj = s.tiers.find((t) => t.id === hoveredDropTier)}
-											Drop in {targetTierObj ? targetTierObj.name : 'Tier'}
-										{:else if hoveredDropTier === '__unranked__'}
-											Drop to Unrank
-										{:else}
-											Dragging...
-										{/if}
-									</span>
-								</div>
+								<p class="text-[11px] font-bold text-white line-clamp-1 leading-tight drop-shadow-sm">{activeDrag.name}</p>
 							</div>
 						</div>
 					</div>
