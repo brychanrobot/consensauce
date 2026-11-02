@@ -400,6 +400,18 @@ const isUnrankedHovered = $derived(hoveredDropTier === '__unranked__');
 let startPointerPos = { x: 0, y: 0 };
 let currentPointerId: number | null = null;
 let dragCandidate: DraggedItemState | null = null;
+let dragDimensions = $state<{ width: number; height: number }>({ width: 96, height: 120 });
+let dragOffset = $state<{ x: number; y: number }>({ x: 0, y: 0 });
+let isMouseDevice = $state(true);
+
+$effect(() => {
+  if (typeof window !== 'undefined') {
+    const isTouchOnly = window.matchMedia('(pointer: coarse) and (hover: none)').matches;
+    if (isTouchOnly) {
+      isMouseDevice = false;
+    }
+  }
+});
 
 // Smooth Auto-Scrolling during drag (Touch + Desktop)
 let autoScrollRaf: number | null = null;
@@ -454,13 +466,20 @@ function updateAutoScroll(clientY: number) {
 
 function handlePointerDown(e: PointerEvent, item: ItemDetailData, originTierId: string | null) {
   // Let native HTML5 drag-and-drop handle mouse events on desktop
-  if (e.pointerType === 'mouse' || e.button !== 0) return;
+  if (e.pointerType === 'mouse' || e.button !== 0) {
+    isMouseDevice = true;
+    return;
+  }
+  isMouseDevice = false;
+
   const target = e.target as HTMLElement | null;
   if (target?.closest('button, a, input, select, textarea')) return;
 
   const cardEl = e.currentTarget as HTMLElement | null;
   if (cardEl) {
-    cardEl.setAttribute('draggable', 'false');
+    const rect = cardEl.getBoundingClientRect();
+    dragDimensions = { width: Math.round(rect.width), height: Math.round(rect.height) };
+    dragOffset = { x: Math.round(e.clientX - rect.left), y: Math.round(e.clientY - rect.top) };
     try {
       cardEl.setPointerCapture(e.pointerId);
     } catch {}
@@ -494,7 +513,6 @@ function handlePointerDown(e: PointerEvent, item: ItemDetailData, originTierId: 
       longPressTimer = null;
     }
     if (cardEl) {
-      cardEl.setAttribute('draggable', 'true');
       try {
         if (cardEl.hasPointerCapture(currentPointerId ?? e.pointerId)) {
           cardEl.releasePointerCapture(currentPointerId ?? e.pointerId);
@@ -541,7 +559,10 @@ function handlePointerDown(e: PointerEvent, item: ItemDetailData, originTierId: 
     const nextTier = dropzone ? dropzone.dataset.dropzoneTier || null : null;
     if (nextTier !== hoveredDropTier) {
       hoveredDropTier = nextTier;
-      if (typeof navigator !== 'undefined' && navigator.vibrate) {
+      const isOrigin =
+        (dragCandidate.originTierId === null && nextTier === '__unranked__') ||
+        dragCandidate.originTierId === nextTier;
+      if (!isOrigin && nextTier !== null && typeof navigator !== 'undefined' && navigator.vibrate) {
         navigator.vibrate(10);
       }
     }
@@ -891,7 +912,7 @@ function onDropTier(e: DragEvent, tierId: string | null) {
 									<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_noninteractive_element_interactions -->
 									<div
 										role="listitem"
-										draggable="true"
+										draggable={isMouseDevice}
 										onclick={(e) => handleCardClick(e, item)}
 										oncontextmenu={(e) => e.preventDefault()}
 										onpointerdown={(e) => handlePointerDown(e, item, tier.id)}
@@ -1009,7 +1030,7 @@ function onDropTier(e: DragEvent, tierId: string | null) {
 								<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_noninteractive_element_interactions -->
 								<div
 									role="listitem"
-									draggable="true"
+									draggable={isMouseDevice}
 									onclick={(e) => handleCardClick(e, item)}
 									oncontextmenu={(e) => e.preventDefault()}
 									onpointerdown={(e) => handlePointerDown(e, item, null)}
@@ -1107,9 +1128,12 @@ function onDropTier(e: DragEvent, tierId: string | null) {
 				{#if isTouchDragging && activeDrag}
 					<div
 						class="fixed top-0 left-0 pointer-events-none z-[9999] select-none will-change-transform"
-						style="transform: translate3d({dragPointerPos.x}px, {dragPointerPos.y - 28}px, 0) translate(-50%, -50%) scale(1.05);"
+						style="transform: translate3d({dragPointerPos.x - dragOffset.x}px, {dragPointerPos.y - dragOffset.y}px, 0) scale(1.04); transform-origin: {dragOffset.x}px {dragOffset.y}px;"
 					>
-						<div class="w-22 sm:w-26 aspect-[4/5] rounded-2xl border border-white/30 bg-zinc-900 shadow-2xl shadow-black/70 overflow-hidden relative">
+						<div
+							class="rounded-2xl border-2 border-primary/80 bg-zinc-900 shadow-2xl shadow-black/70 overflow-hidden relative"
+							style="width: {dragDimensions.width}px; height: {dragDimensions.height}px;"
+						>
 							{#if activeDrag.imageUrl}
 								<img
 									src={activeDrag.imageUrl}
@@ -1122,8 +1146,11 @@ function onDropTier(e: DragEvent, tierId: string | null) {
 								</div>
 							{/if}
 							<div class="absolute inset-0 bg-gradient-to-t from-black/85 via-black/25 to-transparent pointer-events-none"></div>
-							<div class="absolute bottom-0 inset-x-0 p-2 pointer-events-none">
-								<p class="text-[11px] font-bold text-white line-clamp-1 leading-tight drop-shadow-sm">{activeDrag.name}</p>
+							<div class="absolute bottom-0 inset-x-0 p-2.5 pointer-events-none">
+								<p class="text-xs sm:text-sm font-bold text-white line-clamp-1 leading-tight drop-shadow-sm">{activeDrag.name}</p>
+								{#if activeDrag.notes}
+									<p class="text-[10px] text-white/80 line-clamp-1 font-medium mt-0.5">{activeDrag.notes}</p>
+								{/if}
 							</div>
 						</div>
 					</div>
