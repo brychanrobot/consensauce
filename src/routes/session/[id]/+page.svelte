@@ -458,6 +458,14 @@ function handlePointerDown(e: PointerEvent, item: ItemDetailData, originTierId: 
   const target = e.target as HTMLElement | null;
   if (target?.closest('button, a, input, select, textarea')) return;
 
+  const cardEl = e.currentTarget as HTMLElement | null;
+  if (cardEl) {
+    cardEl.setAttribute('draggable', 'false');
+    try {
+      cardEl.setPointerCapture(e.pointerId);
+    } catch {}
+  }
+
   startPointerPos = { x: e.clientX, y: e.clientY };
   let currentPointerPos = { x: e.clientX, y: e.clientY };
   currentPointerId = e.pointerId;
@@ -485,10 +493,25 @@ function handlePointerDown(e: PointerEvent, item: ItemDetailData, originTierId: 
       clearTimeout(longPressTimer);
       longPressTimer = null;
     }
+    if (cardEl) {
+      cardEl.setAttribute('draggable', 'true');
+      try {
+        if (cardEl.hasPointerCapture(currentPointerId ?? e.pointerId)) {
+          cardEl.releasePointerCapture(currentPointerId ?? e.pointerId);
+        }
+      } catch {}
+    }
     stopAutoScroll();
     window.removeEventListener('pointermove', onPointerMove);
     window.removeEventListener('pointerup', onPointerUp);
     window.removeEventListener('pointercancel', onPointerCancel);
+    window.removeEventListener('touchmove', onTouchMove);
+  }
+
+  function onTouchMove(touchEvent: TouchEvent) {
+    if (isTouchDragging && touchEvent.cancelable) {
+      touchEvent.preventDefault();
+    }
   }
 
   function onPointerMove(moveEvent: PointerEvent) {
@@ -564,6 +587,7 @@ function handlePointerDown(e: PointerEvent, item: ItemDetailData, originTierId: 
   window.addEventListener('pointermove', onPointerMove, { passive: false });
   window.addEventListener('pointerup', onPointerUp);
   window.addEventListener('pointercancel', onPointerCancel);
+  window.addEventListener('touchmove', onTouchMove, { passive: false });
 }
 
 // HTML5 Desktop Drag & Drop helpers
@@ -841,9 +865,23 @@ function onDropTier(e: DragEvent, tierId: string | null) {
 								aria-label="{tier.name} tier items"
 								class="flex-1 p-2 sm:p-3 flex flex-wrap items-center gap-2 sm:gap-3 bg-muted/10 min-h-[76px]"
 							>
-								{#if placedHere.length === 0}
-									<span class="text-[11px] sm:text-xs italic px-2 select-none transition-colors {isTierHovered ? 'text-foreground font-semibold' : 'text-muted-foreground/50'}">
-										{isTierHovered ? `Drop here for ${tier.name}` : `Drag items into ${tier.name}`}
+								<!-- Dashed Outline Drop Target Indicator when dragged over -->
+								{#if isTierHovered && (activeDrag || draggedItemId)}
+									<div
+										class="h-20 sm:h-24 w-20 sm:w-24 rounded-2xl border-2 border-dashed flex flex-col items-center justify-center gap-1 font-bold text-[10px] sm:text-xs shrink-0 select-none shadow-inner"
+										style="border-color: {tier.color}; color: {tier.color}; background-color: {tier.color}18;"
+									>
+										<svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+											<path d="M12 5v14"/>
+											<path d="m19 12-7 7-7-7"/>
+										</svg>
+										<span>Drop {tier.name}</span>
+									</div>
+								{/if}
+
+								{#if placedHere.length === 0 && (!isTierHovered || (!activeDrag && !draggedItemId))}
+									<span class="text-[11px] sm:text-xs italic px-2 select-none text-muted-foreground/50">
+										Drag items into {tier.name}
 									</span>
 								{/if}
 
@@ -858,9 +896,9 @@ function onDropTier(e: DragEvent, tierId: string | null) {
 										oncontextmenu={(e) => e.preventDefault()}
 										onpointerdown={(e) => handlePointerDown(e, item, tier.id)}
 										ondragstart={(e) => onDragStart(e, item._id)}
-										class="group relative w-20 sm:w-24 aspect-[4/5] rounded-2xl overflow-hidden shadow-md transition-opacity duration-150 cursor-pointer active:cursor-grabbing select-none shrink-0 border border-white/20 dark:border-white/10 ring-1 ring-black/5 dark:ring-white/5 bg-zinc-900 {isBeingDragged
-											? 'opacity-35'
-											: 'opacity-100 hover:scale-[1.02] hover:shadow-lg hover:border-white/40'}"
+										class="group relative w-20 sm:w-24 aspect-[4/5] rounded-2xl overflow-hidden shadow-md select-none shrink-0 transition-all duration-150 cursor-pointer active:cursor-grabbing bg-zinc-900 {isBeingDragged
+											? 'border-2 border-dashed border-primary/70 opacity-40 scale-95 ring-2 ring-primary/30'
+											: 'border border-white/20 dark:border-white/10 ring-1 ring-black/5 dark:ring-white/5 opacity-100 hover:scale-[1.02] hover:shadow-lg hover:border-white/40'}"
 										style="touch-action: pan-y; -webkit-touch-callout: none; -webkit-user-select: none;"
 									>
 											<!-- Full-Bleed Image Background -->
@@ -927,8 +965,8 @@ function onDropTier(e: DragEvent, tierId: string | null) {
 				>
 					<div class="flex items-center justify-between">
 						<div class="flex items-center gap-2">
-							<h3 class="font-bold text-sm sm:text-base text-foreground transition-colors {isUnrankedHovered ? 'text-primary' : ''}">
-								{isUnrankedHovered ? 'Drop to return to unranked' : 'Unranked Tasting Items'}
+							<h3 class="font-bold text-sm sm:text-base text-foreground">
+								Unranked Tasting Items
 							</h3>
 							<span class="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground font-semibold">
 								{unrankedItems.length}
@@ -938,6 +976,17 @@ function onDropTier(e: DragEvent, tierId: string | null) {
 							Tap tier buttons or drag onto the board above
 						</p>
 					</div>
+
+					<!-- Dashed Outline Drop to Unrank Feedback Indicator -->
+					{#if isUnrankedHovered && ((activeDrag && activeDrag.originTierId !== null) || (draggedItemId && myPlacementMap.get(draggedItemId as Id<'items'>)))}
+						<div class="p-3 border-2 border-dashed border-primary/60 bg-primary/10 rounded-xl text-center flex items-center justify-center gap-2 text-xs font-bold text-primary shadow-xs">
+							<svg class="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+								<polyline points="9 14 4 9 9 4"/>
+								<path d="M20 20v-7a4 4 0 0 0-4-4H4"/>
+							</svg>
+							<span>Release to return item to unranked pool</span>
+						</div>
+					{/if}
 
 					{#if unrankedItems.length === 0}
 						<div class="p-6 sm:p-8 border border-dashed border-border/70 rounded-xl text-center space-y-2 bg-muted/10">
@@ -965,9 +1014,9 @@ function onDropTier(e: DragEvent, tierId: string | null) {
 									oncontextmenu={(e) => e.preventDefault()}
 									onpointerdown={(e) => handlePointerDown(e, item, null)}
 									ondragstart={(e) => onDragStart(e, item._id)}
-									class="group relative rounded-2xl border border-border/80 bg-card overflow-hidden shadow-sm hover:shadow-md transition-opacity duration-150 cursor-pointer active:cursor-grabbing flex flex-col justify-between select-none {isBeingDragged
-										? 'opacity-35'
-										: 'opacity-100 hover:border-primary/50'}"
+									class="group relative rounded-2xl bg-card overflow-hidden shadow-sm hover:shadow-md select-none shrink-0 transition-all duration-150 cursor-pointer active:cursor-grabbing flex flex-col justify-between {isBeingDragged
+										? 'border-2 border-dashed border-primary/70 opacity-40 scale-95 ring-2 ring-primary/30'
+										: 'border border-border/80 opacity-100 hover:border-primary/50'}"
 									style="touch-action: pan-y; -webkit-touch-callout: none; -webkit-user-select: none;"
 								>
 									<!-- Media Top with Integrated Gradient Caption -->
