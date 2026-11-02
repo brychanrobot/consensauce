@@ -48,6 +48,56 @@ export const joinSession = mutation({
       .withIndex('by_session_user', (q) => q.eq('sessionId', args.sessionId).eq('userId', userId))
       .first();
 
+    // Check if this signed-in user previously joined anonymously as clientUserId in this session
+    const clientUserId = args.clientUserId;
+    if (identity?.subject && clientUserId && identity.subject !== clientUserId) {
+      const anonRanking = await ctx.db
+        .query('rankings')
+        .withIndex('by_session_user', (q) =>
+          q.eq('sessionId', args.sessionId).eq('userId', clientUserId),
+        )
+        .first();
+
+      if (anonRanking) {
+        if (!existing) {
+          // Migrate the anonymous ranking to the signed-in user's identity
+          await ctx.db.patch(anonRanking._id, {
+            userId: identity.subject,
+            userName: userName !== 'Taster' ? userName : anonRanking.userName,
+            userAvatar: args.userAvatar || identity.pictureUrl || anonRanking.userAvatar,
+            updatedAt: Date.now(),
+          });
+          // If session was hosted by this anon client, migrate hostId to the authenticated account
+          if (session && session.hostId === args.clientUserId) {
+            await ctx.db.patch(session._id, {
+              hostId: identity.subject,
+              hostName: userName !== 'Taster' ? userName : session.hostName,
+            });
+          }
+          return { rankingId: anonRanking._id, userId: identity.subject };
+        } else {
+          // If both exist: merge placements if existing has none and anon has placements
+          if (existing.placements.length === 0 && anonRanking.placements.length > 0) {
+            await ctx.db.patch(existing._id, {
+              placements: anonRanking.placements,
+              isReady: anonRanking.isReady || existing.isReady,
+              userName: userName !== 'Taster' ? userName : anonRanking.userName,
+              userAvatar: args.userAvatar || identity.pictureUrl || existing.userAvatar,
+              updatedAt: Date.now(),
+            });
+          }
+          // Delete duplicate anonymous ranking
+          await ctx.db.delete(anonRanking._id);
+          if (session && session.hostId === args.clientUserId) {
+            await ctx.db.patch(session._id, {
+              hostId: identity.subject,
+              hostName: userName !== 'Taster' ? userName : session.hostName,
+            });
+          }
+        }
+      }
+    }
+
     // Check for orphaned placeholder host created before clientUserId was supported
     if (session?.hostId.startsWith('guest-')) {
       const placeholderHost = await ctx.db
@@ -131,6 +181,23 @@ export const savePlacement = mutation({
       .withIndex('by_session_user', (q) => q.eq('sessionId', args.sessionId).eq('userId', userId))
       .first();
 
+    const clientUserId = args.clientUserId;
+    if (!ranking && identity?.subject && clientUserId && identity.subject !== clientUserId) {
+      const anonRanking = await ctx.db
+        .query('rankings')
+        .withIndex('by_session_user', (q) =>
+          q.eq('sessionId', args.sessionId).eq('userId', clientUserId),
+        )
+        .first();
+      if (anonRanking) {
+        await ctx.db.patch(anonRanking._id, {
+          userId: identity.subject,
+          updatedAt: Date.now(),
+        });
+        ranking = anonRanking;
+      }
+    }
+
     if (!ranking) {
       const rankingId = await ctx.db.insert('rankings', {
         sessionId: args.sessionId,
@@ -195,13 +262,61 @@ export const setReady = mutation({
     const userId = identity?.subject || args.clientUserId;
     if (!userId) throw new Error('User not identified');
 
-    const ranking = await ctx.db
+    let ranking = await ctx.db
       .query('rankings')
       .withIndex('by_session_user', (q) => q.eq('sessionId', args.sessionId).eq('userId', userId))
       .first();
 
+    const clientUserId = args.clientUserId;
+    if (!ranking && identity?.subject && clientUserId && identity.subject !== clientUserId) {
+      ranking = await ctx.db
+        .query('rankings')
+        .withIndex('by_session_user', (q) =>
+          q.eq('sessionId', args.sessionId).eq('userId', clientUserId),
+        )
+        .first();
+      if (ranking) {
+        await ctx.db.patch(ranking._id, { userId: identity.subject });
+      }
+    }
+
     if (!ranking) throw new Error('Ranking record not found');
     await ctx.db.patch(ranking._id, { isReady: args.isReady, updatedAt: Date.now() });
+  },
+});
+
+export const removeParticipant = mutation({
+  args: {
+    sessionId: v.id('sessions'),
+    clientUserId: v.optional(v.string()),
+    targetUserId: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    const callerUserId = identity?.subject || args.clientUserId;
+    if (!callerUserId) throw new Error('Unauthorized');
+
+    const session = await ctx.db.get(args.sessionId);
+    if (!session) throw new Error('Session not found');
+
+    if (session.hostId !== callerUserId) {
+      throw new Error('Only the session host can remove participants');
+    }
+
+    if (args.targetUserId === session.hostId) {
+      throw new Error('Cannot remove the session host');
+    }
+
+    const targetRanking = await ctx.db
+      .query('rankings')
+      .withIndex('by_session_user', (q) =>
+        q.eq('sessionId', args.sessionId).eq('userId', args.targetUserId),
+      )
+      .first();
+
+    if (targetRanking) {
+      await ctx.db.delete(targetRanking._id);
+    }
   },
 });
 

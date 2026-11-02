@@ -69,33 +69,32 @@ async function triggerInstall() {
 
 <ClerkProvider publishableKey={clerkPubKey}>
 	<ConvexClerkProvider {convexUrl}>
-	<div class="min-h-screen flex flex-col bg-background text-foreground antialiased selection:bg-primary selection:text-primary-foreground">
-		<header class="relative sm:sticky sm:top-0 z-50 w-full border-b border-border/50 bg-background/90 backdrop-blur-md">
-			<div class="max-w-6xl mx-auto px-4 h-16 flex items-center justify-between">
-				<a href="/" class="flex items-center gap-2.5 font-black text-xl tracking-tight hover:opacity-90 transition-opacity">
-					<SauceLogo class="w-9 h-9 shadow-sm shadow-rose-500/20" />
+	<div class="min-h-screen flex flex-col bg-background text-foreground antialiased selection:bg-primary selection:text-primary-foreground overflow-x-clip">
+		<header class="relative sm:sticky sm:top-0 z-50 w-full max-w-full border-b border-border/50 bg-background/90 backdrop-blur-md">
+			<div class="max-w-6xl mx-auto px-3 sm:px-4 h-14 sm:h-16 flex items-center justify-between gap-2">
+				<a href="/" class="flex items-center gap-2 sm:gap-2.5 font-black text-lg sm:text-xl tracking-tight hover:opacity-90 transition-opacity shrink-0">
+					<SauceLogo class="w-8 h-8 sm:w-9 sm:h-9 shadow-sm shadow-rose-500/20 shrink-0" />
 					<span class="bg-gradient-to-r from-foreground via-foreground to-muted-foreground bg-clip-text">
 						Consensauce
 					</span>
 				</a>
 
-				<nav class="flex items-center gap-2.5 sm:gap-3">
+				<nav class="flex items-center gap-1.5 sm:gap-3 shrink-0">
 					{#if installPrompt}
 						<button
 							type="button"
 							onclick={triggerInstall}
-							class="inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 text-rose-600 dark:text-rose-400 text-xs font-bold transition-all cursor-pointer shadow-xs active:scale-95 animate-pulse"
+							class="inline-flex items-center gap-1.5 p-1.5 sm:px-3 sm:py-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 text-rose-600 dark:text-rose-400 text-xs font-bold transition-all cursor-pointer shadow-xs active:scale-95 animate-pulse"
 							title="Install Consensauce as a progressive web app"
 						>
-							<InstallIcon class="w-3.5 h-3.5 text-rose-500" />
+							<InstallIcon class="w-3.5 h-3.5 text-rose-500 shrink-0" />
 							<span class="hidden sm:inline">Install App</span>
-							<span class="sm:hidden">Install</span>
 						</button>
 					{/if}
 
 					<a
 						href="/"
-						class="text-sm font-medium text-muted-foreground hover:text-foreground transition-colors px-3 py-1.5 rounded-lg hover:bg-muted/50"
+						class="hidden md:inline-flex text-sm font-medium text-muted-foreground hover:text-foreground transition-colors px-3 py-1.5 rounded-lg hover:bg-muted/50"
 					>
 						Sessions
 					</a>
@@ -103,12 +102,12 @@ async function triggerInstall() {
 					<button
 						type="button"
 						onclick={() => theme.toggle()}
-						class="w-9 h-9 rounded-xl border border-border/70 bg-card hover:bg-muted text-foreground flex items-center justify-center transition-all cursor-pointer shadow-xs active:scale-95"
+						class="w-8 h-8 sm:w-9 sm:h-9 rounded-xl border border-border/70 bg-card hover:bg-muted text-foreground flex items-center justify-center transition-all cursor-pointer shadow-xs active:scale-95 shrink-0"
 						title={theme.isDark ? 'Switch to light mode' : 'Switch to dark mode'}
 						aria-label="Toggle dark/light theme"
 					>
 						{#if theme.isDark}
-							<svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 text-amber-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+							<svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 sm:w-4 sm:h-4 text-amber-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
 								<circle cx="12" cy="12" r="4"/>
 								<path d="M12 2v2"/>
 								<path d="M12 20v2"/>
@@ -120,7 +119,7 @@ async function triggerInstall() {
 								<path d="m19.07 4.93-1.41 1.41"/>
 							</svg>
 						{:else}
-							<svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 text-slate-700" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+							<svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 sm:w-4 sm:h-4 text-slate-700" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
 								<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>
 							</svg>
 						{/if}
@@ -129,13 +128,13 @@ async function triggerInstall() {
 					<Show when="signed-out">
 						<SignInButton
 							mode="modal"
-							class="inline-flex items-center justify-center rounded-lg text-sm font-semibold bg-primary text-primary-foreground hover:bg-primary/90 h-9 px-4 py-2 transition-all shadow-sm cursor-pointer"
+							class="inline-flex items-center justify-center rounded-lg text-xs sm:text-sm font-semibold bg-primary text-primary-foreground hover:bg-primary/90 h-8 sm:h-9 px-3 sm:px-4 py-1.5 sm:py-2 transition-all shadow-sm cursor-pointer whitespace-nowrap shrink-0"
 						>
 							Sign In
 						</SignInButton>
 					</Show>
 					<Show when="signed-in">
-						<div class="flex items-center gap-2 pl-1">
+						<div class="flex items-center gap-2 pl-0.5 sm:pl-1 shrink-0">
 							<UserButton afterSignOutUrl="/" />
 						</div>
 					</Show>

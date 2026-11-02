@@ -46,6 +46,12 @@ const joinSession = useMutation(api.rankings.joinSession);
 const savePlacement = useMutation(api.rankings.savePlacement);
 const setReady = useMutation(api.rankings.setReady);
 const updateSessionStatus = useMutation(api.sessions.updateStatus);
+const removeParticipant = useMutation(api.rankings.removeParticipant);
+
+const isCurrentUserHost = $derived.by(() => {
+  const h = session.data?.hostId;
+  return !!h && (h === localUserId || (!!clerk.user?.id && h === clerk.user.id));
+});
 
 // Client-side identity for testing or guest access
 let localUserId = $state('');
@@ -231,6 +237,24 @@ async function handleToggleStatus() {
   }
 }
 
+async function handleRemoveParticipant(targetUserId: string, targetName: string) {
+  if (typeof window !== 'undefined') {
+    const confirmed = window.confirm(
+      `Are you sure you want to remove ${targetName} and their rankings from this session?`,
+    );
+    if (!confirmed) return;
+  }
+  try {
+    await removeParticipant({
+      sessionId,
+      clientUserId: localUserId,
+      targetUserId,
+    });
+  } catch (err) {
+    console.error('Failed to remove participant:', err);
+  }
+}
+
 function copyRoomLink() {
   if (typeof window !== 'undefined') {
     navigator.clipboard.writeText(window.location.href);
@@ -360,6 +384,28 @@ function handlePointerDown(
     originTierId,
   };
 
+  // Require a 260ms long-press so users can still scroll vertically across items
+  let longPressTimer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
+    isTouchDragging = true;
+    activeDrag = dragCandidate;
+    dragPointerPos = { x: startPointerPos.x, y: startPointerPos.y };
+    if (typeof navigator !== 'undefined' && navigator.vibrate) {
+      navigator.vibrate(35);
+    }
+    longPressTimer = null;
+  }, 260);
+
+  function cleanup() {
+    if (longPressTimer !== null) {
+      clearTimeout(longPressTimer);
+      longPressTimer = null;
+    }
+    stopAutoScroll();
+    window.removeEventListener('pointermove', onPointerMove);
+    window.removeEventListener('pointerup', onPointerUp);
+    window.removeEventListener('pointercancel', onPointerCancel);
+  }
+
   function onPointerMove(moveEvent: PointerEvent) {
     if (moveEvent.pointerId !== currentPointerId || !dragCandidate) return;
 
@@ -367,45 +413,37 @@ function handlePointerDown(
     const dy = moveEvent.clientY - startPointerPos.y;
     const distSq = dx * dx + dy * dy;
 
-    if (!isTouchDragging && distSq > 36) {
-      isTouchDragging = true;
-      activeDrag = dragCandidate;
+    // If user moved > 8px before long-press activates, they are scrolling!
+    if (!isTouchDragging) {
+      if (distSq > 64) {
+        cleanup();
+      }
+      return;
+    }
+
+    if (moveEvent.cancelable) {
+      moveEvent.preventDefault();
+    }
+    dragPointerPos = { x: moveEvent.clientX, y: moveEvent.clientY };
+    updateAutoScroll(moveEvent.clientY);
+
+    const elem = document.elementFromPoint(moveEvent.clientX, moveEvent.clientY);
+    const dropzone = elem?.closest<HTMLElement>('[data-dropzone-tier]');
+    const nextTier = dropzone ? dropzone.dataset.dropzoneTier || null : null;
+    if (nextTier !== hoveredDropTier) {
+      hoveredDropTier = nextTier;
       if (typeof navigator !== 'undefined' && navigator.vibrate) {
-        navigator.vibrate(25);
+        navigator.vibrate(10);
       }
     }
-
-    if (isTouchDragging) {
-      if (moveEvent.cancelable) {
-        moveEvent.preventDefault();
-      }
-      dragPointerPos = { x: moveEvent.clientX, y: moveEvent.clientY };
-      updateAutoScroll(moveEvent.clientY);
-
-      const elem = document.elementFromPoint(moveEvent.clientX, moveEvent.clientY);
-      const dropzone = elem?.closest<HTMLElement>('[data-dropzone-tier]');
-      const nextTier = dropzone ? dropzone.dataset.dropzoneTier || null : null;
-      if (nextTier !== hoveredDropTier) {
-        hoveredDropTier = nextTier;
-        if (typeof navigator !== 'undefined' && navigator.vibrate) {
-          navigator.vibrate(10);
-        }
-      }
-    }
-  }
-
-  function cleanup() {
-    stopAutoScroll();
-    window.removeEventListener('pointermove', onPointerMove);
-    window.removeEventListener('pointerup', onPointerUp);
-    window.removeEventListener('pointercancel', onPointerCancel);
   }
 
   function onPointerUp(upEvent: PointerEvent) {
     if (upEvent.pointerId !== currentPointerId) return;
+    const wasDragging = isTouchDragging;
     cleanup();
 
-    if (isTouchDragging && activeDrag && hoveredDropTier !== null) {
+    if (wasDragging && activeDrag && hoveredDropTier !== null) {
       const targetTier = hoveredDropTier === '__unranked__' ? null : hoveredDropTier;
       if (targetTier !== activeDrag.originTierId) {
         handleMoveItem(activeDrag.id, targetTier);
@@ -500,13 +538,13 @@ function onDropTier(e: DragEvent, tierId: string | null) {
 	{@const consensusData = consensus.data}
 
 	<!-- Room Header & Control Bar -->
-	<div class="space-y-4 sm:space-y-6 pb-20 sm:pb-8">
+	<div class="space-y-4 sm:space-y-6 pb-20 sm:pb-8 max-w-full overflow-x-hidden">
 		<div class="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-4 border-b border-border/60">
-			<div class="space-y-2">
+			<div class="space-y-2 max-w-full">
 				<div class="flex items-center gap-2.5 flex-wrap">
-					<h1 class="text-xl sm:text-2xl md:text-3xl font-black tracking-tight">{s.title}</h1>
+					<h1 class="text-xl sm:text-2xl md:text-3xl font-black tracking-tight break-words">{s.title}</h1>
 					<span
-						class="text-[11px] font-bold px-2.5 py-0.5 rounded-full uppercase tracking-wider inline-flex items-center gap-1.5 {s.status === 'revealed'
+						class="text-[11px] font-bold px-2.5 py-0.5 rounded-full uppercase tracking-wider inline-flex items-center gap-1.5 shrink-0 {s.status === 'revealed'
 							? 'bg-purple-500/15 text-purple-600 dark:text-purple-400 border border-purple-500/25'
 							: 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/25'}"
 					>
@@ -524,7 +562,7 @@ function onDropTier(e: DragEvent, tierId: string | null) {
 					<button
 						type="button"
 						onclick={() => copyRoomCode(s.code)}
-						class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-muted/80 hover:bg-muted text-foreground border border-border/70 font-mono font-bold text-xs transition-colors cursor-pointer"
+						class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-muted/80 hover:bg-muted text-foreground border border-border/70 font-mono font-bold text-xs transition-colors cursor-pointer shrink-0"
 						title="Tap to copy room code"
 					>
 						<span class="text-muted-foreground font-sans font-normal">Code:</span>
@@ -535,7 +573,7 @@ function onDropTier(e: DragEvent, tierId: string | null) {
 					<button
 						type="button"
 						onclick={copyRoomLink}
-						class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-secondary/80 hover:bg-secondary text-secondary-foreground text-xs font-semibold border border-border/70 transition-colors cursor-pointer"
+						class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-secondary/80 hover:bg-secondary text-secondary-foreground text-xs font-semibold border border-border/70 transition-colors cursor-pointer shrink-0"
 					>
 						<ShareIcon class="w-3.5 h-3.5" />
 						<span>Share Invite</span>
@@ -544,11 +582,11 @@ function onDropTier(e: DragEvent, tierId: string | null) {
 					<button
 						type="button"
 						onclick={openNameModal}
-						class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-muted/60 hover:bg-muted text-foreground border border-border/70 text-xs font-medium transition-colors cursor-pointer"
+						class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-muted/60 hover:bg-muted text-foreground border border-border/70 text-xs font-medium transition-colors cursor-pointer shrink-0"
 					>
-						<UserIcon class="w-3.5 h-3.5 text-muted-foreground" />
-						<span>Tasting as: <strong class="text-foreground">{localUserName || 'Guest'}</strong></span>
-						<EditIcon class="w-2.5 h-2.5 text-muted-foreground" />
+						<UserIcon class="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+						<span>Tasting as: <strong class="text-foreground max-w-[120px] sm:max-w-none truncate inline-block align-bottom">{localUserName || 'Guest'}</strong></span>
+						<EditIcon class="w-2.5 h-2.5 text-muted-foreground shrink-0" />
 					</button>
 
 					{#if copyFeedback}
@@ -606,7 +644,7 @@ function onDropTier(e: DragEvent, tierId: string | null) {
 
 		<!-- Party Live Tasting & Readiness Progress (Ranking Mode) -->
 		{#if s.status === 'ranking'}
-			<div class="rounded-2xl border border-border/80 bg-card/60 backdrop-blur-xs p-3.5 sm:p-4 space-y-3 shadow-xs">
+			<div class="rounded-2xl border border-border/80 bg-card/60 backdrop-blur-xs p-3.5 sm:p-4 space-y-3 shadow-xs max-w-full overflow-hidden">
 				<div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
 					<div class="space-y-1">
 						<div class="flex items-center gap-2">
@@ -633,10 +671,10 @@ function onDropTier(e: DragEvent, tierId: string | null) {
 				</div>
 
 				<!-- Tasters Status Pills -->
-				<div class="flex items-center gap-2 overflow-x-auto pb-1 text-xs">
+				<div class="flex items-center gap-2 overflow-x-auto pb-1 text-xs max-w-full">
 					{#each rankingList as r (r._id)}
 						{@const isSelf = (clerk.user?.id && r.userId === clerk.user.id) || r.userId === localUserId}
-						{@const isHost = session.data?.hostId === r.userId}
+						{@const isTasterHost = session.data?.hostId === r.userId}
 						{@const rPlacedCount = r.placements?.length ?? 0}
 						<div
 							class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-xs font-semibold shrink-0 {r.isReady
@@ -645,12 +683,26 @@ function onDropTier(e: DragEvent, tierId: string | null) {
 						>
 							<span class="w-2 h-2 rounded-full {r.isReady ? 'bg-emerald-500' : 'bg-amber-400 animate-pulse'}"></span>
 							<span>{r.userName}{isSelf ? ' (You)' : ''}</span>
-							{#if isHost}
+							{#if isTasterHost}
 								<span class="text-[10px] font-bold text-amber-600 dark:text-amber-400 bg-amber-500/15 px-1.5 py-0.5 rounded-md leading-none">Host</span>
 							{/if}
 							<span class="text-[10px] opacity-75">({rPlacedCount}/{totalItemCount})</span>
 							{#if r.isReady}
 								<CheckIcon class="w-3 h-3 text-emerald-500" />
+							{/if}
+							{#if isCurrentUserHost && !isSelf && !isTasterHost}
+								<button
+									type="button"
+									onclick={(e) => {
+										e.stopPropagation();
+										handleRemoveParticipant(r.userId, r.userName);
+									}}
+									class="p-0.5 rounded-full hover:bg-destructive/20 text-muted-foreground hover:text-destructive transition-colors ml-0.5 cursor-pointer"
+									title="Remove {r.userName} from session"
+									aria-label="Remove {r.userName}"
+								>
+									<CloseIcon class="w-3 h-3" />
+								</button>
 							{/if}
 						</div>
 					{/each}
@@ -727,7 +779,7 @@ function onDropTier(e: DragEvent, tierId: string | null) {
 											class="group relative w-20 sm:w-24 aspect-[4/5] rounded-2xl overflow-hidden shadow-md transition-all cursor-grab active:cursor-grabbing select-none shrink-0 border border-white/20 dark:border-white/10 ring-1 ring-black/5 dark:ring-white/5 bg-zinc-900 {isBeingDragged
 												? 'opacity-30 scale-95 border-2 border-dashed border-primary ring-2 ring-primary/40'
 												: 'hover:scale-[1.03] hover:shadow-lg hover:border-white/40'}"
-											style="touch-action: none; -webkit-touch-callout: none; -webkit-user-select: none;"
+											style="touch-action: pan-y; -webkit-touch-callout: none; -webkit-user-select: none;"
 										>
 											<!-- Full-Bleed Image Background -->
 											{#if item.imageUrl}
@@ -842,7 +894,7 @@ function onDropTier(e: DragEvent, tierId: string | null) {
 									class="group relative rounded-2xl border border-border/80 bg-card overflow-hidden shadow-sm hover:shadow-md transition-all cursor-grab active:cursor-grabbing flex flex-col justify-between select-none {isBeingDragged
 										? 'opacity-30 scale-95 border-2 border-dashed border-primary/60'
 										: 'hover:border-primary/50'}"
-									style="touch-action: none; -webkit-touch-callout: none; -webkit-user-select: none;"
+									style="touch-action: pan-y; -webkit-touch-callout: none; -webkit-user-select: none;"
 								>
 									<!-- Media Top with Integrated Gradient Caption -->
 									<div class="relative aspect-[4/3] w-full bg-muted overflow-hidden">
@@ -1120,14 +1172,28 @@ function onDropTier(e: DragEvent, tierId: string | null) {
 					<div class="space-y-4">
 						<div class="flex items-center gap-2 overflow-x-auto pb-2">
 							{#each rankingList as r, idx (r._id)}
-								<button
-									onclick={() => (compareUserIndex = idx)}
-									class="px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer shrink-0 {compareUserIndex === idx
-										? 'bg-primary text-primary-foreground shadow-sm'
-										: 'bg-muted text-muted-foreground hover:text-foreground'}"
-								>
-									{r.userName}'s Board
-								</button>
+								{@const isTasterSelf = (clerk.user?.id && r.userId === clerk.user.id) || r.userId === localUserId}
+								{@const isTasterHost = session.data?.hostId === r.userId}
+								<div class="inline-flex items-center rounded-xl shrink-0 {compareUserIndex === idx
+									? 'bg-primary text-primary-foreground shadow-sm'
+									: 'bg-muted text-muted-foreground hover:text-foreground'}">
+									<button
+										onclick={() => (compareUserIndex = idx)}
+										class="px-3.5 py-2 text-xs font-bold transition-all cursor-pointer"
+									>
+										{r.userName}'s Board
+									</button>
+									{#if isCurrentUserHost && !isTasterSelf && !isTasterHost}
+										<button
+											type="button"
+											onclick={() => handleRemoveParticipant(r.userId, r.userName)}
+											class="p-1.5 mr-1.5 rounded-lg opacity-70 hover:opacity-100 hover:bg-destructive/20 text-destructive transition-colors cursor-pointer"
+											title="Remove {r.userName}"
+										>
+											<CloseIcon class="w-3 h-3" />
+										</button>
+									{/if}
+								</div>
 							{/each}
 						</div>
 
