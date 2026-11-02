@@ -117,14 +117,47 @@ test('mobile tasting experience with uncluttered cards, auto-scroll, progress ba
     fullPage: false,
   });
 
-  // 5. Rank 3 items to show clean placed cards & progress bar
-  // Item 1 -> S Tier
-  const item1 = page
+  // 4a. Verify Item Detail Modal: tap picture of unranked item without long press
+  const item1Card = page
     .locator('div[role="listitem"]')
     .filter({ hasText: 'Habanero Mango Hot Sauce' });
-  await item1.getByRole('button', { name: /Move .* to S tier|^S$/i }).click();
-  await page.waitForTimeout(1000);
+  await item1Card.click({ position: { x: 50, y: 50 } });
+  const modal = page.getByRole('dialog', { name: /Item Details/i });
+  await expect(modal).toBeVisible({ timeout: 5000 });
+  await expect(modal.getByText('Tropical sweet upfront, scorching kick')).toBeVisible();
+  await expect(modal.getByText('Unranked')).toBeVisible();
 
+  // Screenshot of Item Detail Modal
+  await page.screenshot({
+    path: `${ARTIFACT_DIR}/mobile-07-item-detail-modal.png`,
+    fullPage: false,
+  });
+
+  // Assign S tier directly from within the Item Detail Modal
+  await modal.getByRole('button', { name: /^S$/ }).click();
+  await expect(modal.getByText('Tier S')).toBeVisible();
+
+  // Close modal with Done
+  await modal.getByRole('button', { name: 'Done' }).click();
+  await expect(page.getByRole('dialog', { name: /Item Details/i })).not.toBeVisible();
+
+  // Verify optimistic update: Habanero Mango Hot Sauce is immediately visible in Tier S
+  const tierSRow = page.locator('[data-dropzone-tier="S"]');
+  await expect(tierSRow.getByText('Habanero Mango Hot Sauce')).toBeVisible();
+
+  // Also verify tapping a placed card opens the detail modal with current tier selected
+  await tierSRow.scrollIntoViewIfNeeded();
+  await page.waitForTimeout(400);
+  const placedCard = tierSRow
+    .locator('div[role="listitem"]')
+    .filter({ hasText: 'Habanero Mango Hot Sauce' });
+  await placedCard.click({ position: { x: 45, y: 60 } });
+  await expect(page.getByRole('dialog', { name: /Item Details/i })).toBeVisible({ timeout: 5000 });
+  await expect(modal.getByText('Tier S')).toBeVisible();
+  await modal.getByRole('button', { name: 'Done' }).click();
+  await expect(page.getByRole('dialog', { name: /Item Details/i })).not.toBeVisible();
+
+  // 5. Rank remaining 2 items to show clean placed cards & progress bar
   // Item 2 -> A Tier
   const item2 = page.locator('div[role="listitem"]').filter({ hasText: 'Smoky Garlic Reaper' });
   await item2.getByRole('button', { name: /Move .* to A tier|^A$/i }).click();

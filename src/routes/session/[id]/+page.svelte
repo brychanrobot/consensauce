@@ -50,7 +50,12 @@ const removeParticipant = useMutation(api.rankings.removeParticipant);
 
 const isCurrentUserHost = $derived.by(() => {
   const h = session.data?.hostId;
-  return !!h && (h === localUserId || (!!clerk.user?.id && h === clerk.user.id));
+  if (!h) return false;
+  if (h === localUserId) return true;
+  if (clerk.user?.id && (h === clerk.user.id || h.startsWith('guest-') || h.startsWith('user_'))) {
+    return true;
+  }
+  return false;
 });
 
 // Client-side identity for testing or guest access
@@ -89,14 +94,18 @@ $effect(() => {
   }
 });
 
-// Auto-join session
+// Auto-join session (reactively triggers on mount and when Clerk authentication state updates)
 $effect(() => {
-  if (sessionId && localUserId && localUserName) {
+  const currentUserId = clerk.user?.id || localUserId;
+  const currentUserName = clerk.user?.fullName || localUserName;
+  const currentUserAvatar = clerk.user?.imageUrl;
+
+  if (sessionId && currentUserId && currentUserName) {
     joinSession({
       sessionId,
       clientUserId: localUserId,
-      userName: localUserName,
-      userAvatar: clerk.user?.imageUrl,
+      userName: currentUserName,
+      userAvatar: currentUserAvatar,
     }).catch((err) => console.error('Join error:', err));
   }
 });
@@ -108,6 +117,9 @@ const myRanking = $derived.by(() => {
   return list.find((r) => (clerkId && r.userId === clerkId) || r.userId === localUserId);
 });
 
+// Optimistic placement overrides: itemId -> tierId (or null for unranked)
+let optimisticPlacements = $state<Record<string, string | null>>({});
+
 // Placement map for quick lookup: itemId -> { tierId, rank }
 const myPlacementMap = $derived.by(() => {
   const map = new Map<string, { tierId: string; rank: number }>();
@@ -116,7 +128,37 @@ const myPlacementMap = $derived.by(() => {
       map.set(p.itemId, p);
     }
   }
+  // Apply optimistic overrides immediately so UI reacts with 0ms delay
+  for (const [itemId, tierId] of Object.entries(optimisticPlacements)) {
+    if (tierId === null) {
+      map.delete(itemId);
+    } else {
+      const existing = map.get(itemId);
+      map.set(itemId, { tierId, rank: existing ? existing.rank : map.size });
+    }
+  }
   return map;
+});
+
+// Clear optimistic overrides once the server ranking reflects them
+$effect(() => {
+  if (myRanking && Object.keys(optimisticPlacements).length > 0) {
+    const serverMap = new Map<string, string>(
+      (myRanking.placements ?? []).map((p) => [p.itemId as string, p.tierId]),
+    );
+    let hasChanges = false;
+    const next = { ...optimisticPlacements };
+    for (const [itemId, optTier] of Object.entries(optimisticPlacements)) {
+      const serverTier = serverMap.get(itemId) ?? null;
+      if (serverTier === optTier) {
+        delete next[itemId];
+        hasChanges = true;
+      }
+    }
+    if (hasChanges) {
+      optimisticPlacements = next;
+    }
+  }
 });
 
 // Unranked items pool derived reactively
@@ -199,6 +241,8 @@ async function handleAddItem(e: SubmitEvent) {
 }
 
 async function handleMoveItem(itemId: Id<'items'>, tierId: string | null) {
+  // Apply optimistic update immediately so there is zero flash or bounce
+  optimisticPlacements = { ...optimisticPlacements, [itemId]: tierId };
   try {
     await savePlacement({
       sessionId,
@@ -208,6 +252,10 @@ async function handleMoveItem(itemId: Id<'items'>, tierId: string | null) {
     });
   } catch (err) {
     console.error('Failed to move item:', err);
+    // On failure, revert optimistic override
+    const next = { ...optimisticPlacements };
+    delete next[itemId];
+    optimisticPlacements = next;
   }
 }
 
@@ -250,8 +298,12 @@ async function handleRemoveParticipant(targetUserId: string, targetName: string)
       clientUserId: localUserId,
       targetUserId,
     });
-  } catch (err) {
+  } catch (err: unknown) {
     console.error('Failed to remove participant:', err);
+    if (typeof window !== 'undefined') {
+      const msg = err instanceof Error ? err.message : 'Failed to remove participant';
+      window.alert(msg);
+    }
   }
 }
 
@@ -292,6 +344,42 @@ function saveNewName() {
   }).catch((err) => console.error('Join error:', err));
   isNameModalOpen = false;
   isNameRequired = false;
+}
+
+// Item Detail Modal State
+interface ItemDetailData {
+  _id: Id<'items'>;
+  name: string;
+  imageUrl?: string;
+  notes?: string;
+  addedBy?: string;
+  createdAt?: number;
+}
+
+let selectedDetailItem = $state<ItemDetailData | null>(null);
+let lastTapOpenTime = 0;
+
+function openItemDetail(item: ItemDetailData) {
+  selectedDetailItem = item;
+  lastTapOpenTime = Date.now();
+}
+
+function closeItemDetail() {
+  selectedDetailItem = null;
+}
+
+function handleCardClick(e: MouseEvent, item: ItemDetailData) {
+  const target = e.target as HTMLElement | null;
+  if (target?.closest('button, a, input, select, textarea')) return;
+  if (isTouchDragging || draggedItemId) return;
+  if (Date.now() - lastTapOpenTime < 350) return;
+  openItemDetail(item);
+}
+
+function handleKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape' && selectedDetailItem) {
+    closeItemDetail();
+  }
 }
 
 // Drag & Drop State & Touch/Pointer Engine
@@ -364,11 +452,7 @@ function updateAutoScroll(clientY: number) {
   }
 }
 
-function handlePointerDown(
-  e: PointerEvent,
-  item: { _id: Id<'items'>; name: string; imageUrl?: string; notes?: string },
-  originTierId: string | null,
-) {
+function handlePointerDown(e: PointerEvent, item: ItemDetailData, originTierId: string | null) {
   // Let native HTML5 drag-and-drop handle mouse events on desktop
   if (e.pointerType === 'mouse' || e.button !== 0) return;
   const target = e.target as HTMLElement | null;
@@ -441,6 +525,9 @@ function handlePointerDown(
   function onPointerUp(upEvent: PointerEvent) {
     if (upEvent.pointerId !== currentPointerId) return;
     const wasDragging = isTouchDragging;
+    const dx = upEvent.clientX - startPointerPos.x;
+    const dy = upEvent.clientY - startPointerPos.y;
+    const distSq = dx * dx + dy * dy;
     cleanup();
 
     if (wasDragging && activeDrag && hoveredDropTier !== null) {
@@ -451,6 +538,8 @@ function handlePointerDown(
           navigator.vibrate([15, 30, 20]);
         }
       }
+    } else if (!wasDragging && distSq <= 64) {
+      openItemDetail(item);
     }
 
     isTouchDragging = false;
@@ -515,6 +604,8 @@ function onDropTier(e: DragEvent, tierId: string | null) {
   hoveredDropTier = null;
 }
 </script>
+
+<svelte:window onkeydown={handleKeydown} />
 
 {#if session.isLoading}
 	<div class="py-24 text-center space-y-4">
@@ -770,13 +861,15 @@ function onDropTier(e: DragEvent, tierId: string | null) {
 									{#each placedHere as item (item._id)}
 										{@const isBeingDragged = activeDrag?.id === item._id}
 										<!-- Placed Item Card (Full-bleed photo, gradient caption, no tacked-on box) -->
+										<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_noninteractive_element_interactions -->
 										<div
 											role="listitem"
 											draggable="true"
+											onclick={(e) => handleCardClick(e, item)}
 											oncontextmenu={(e) => e.preventDefault()}
 											onpointerdown={(e) => handlePointerDown(e, item, tier.id)}
 											ondragstart={(e) => onDragStart(e, item._id)}
-											class="group relative w-20 sm:w-24 aspect-[4/5] rounded-2xl overflow-hidden shadow-md transition-all cursor-grab active:cursor-grabbing select-none shrink-0 border border-white/20 dark:border-white/10 ring-1 ring-black/5 dark:ring-white/5 bg-zinc-900 {isBeingDragged
+											class="group relative w-20 sm:w-24 aspect-[4/5] rounded-2xl overflow-hidden shadow-md transition-all cursor-pointer active:cursor-grabbing select-none shrink-0 border border-white/20 dark:border-white/10 ring-1 ring-black/5 dark:ring-white/5 bg-zinc-900 {isBeingDragged
 												? 'opacity-30 scale-95 border-2 border-dashed border-primary ring-2 ring-primary/40'
 												: 'hover:scale-[1.03] hover:shadow-lg hover:border-white/40'}"
 											style="touch-action: pan-y; -webkit-touch-callout: none; -webkit-user-select: none;"
@@ -885,13 +978,15 @@ function onDropTier(e: DragEvent, tierId: string | null) {
 						>
 							{#each unrankedItems as item (item._id)}
 								{@const isBeingDragged = activeDrag?.id === item._id}
+								<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_noninteractive_element_interactions -->
 								<div
 									role="listitem"
 									draggable="true"
+									onclick={(e) => handleCardClick(e, item)}
 									oncontextmenu={(e) => e.preventDefault()}
 									onpointerdown={(e) => handlePointerDown(e, item, null)}
 									ondragstart={(e) => onDragStart(e, item._id)}
-									class="group relative rounded-2xl border border-border/80 bg-card overflow-hidden shadow-sm hover:shadow-md transition-all cursor-grab active:cursor-grabbing flex flex-col justify-between select-none {isBeingDragged
+									class="group relative rounded-2xl border border-border/80 bg-card overflow-hidden shadow-sm hover:shadow-md transition-all cursor-pointer active:cursor-grabbing flex flex-col justify-between select-none {isBeingDragged
 										? 'opacity-30 scale-95 border-2 border-dashed border-primary/60'
 										: 'hover:border-primary/50'}"
 									style="touch-action: pan-y; -webkit-touch-callout: none; -webkit-user-select: none;"
@@ -1143,7 +1238,15 @@ function onDropTier(e: DragEvent, tierId: string | null) {
 										<span class="text-xs text-muted-foreground/40 italic px-2">No consensus items</span>
 									{:else}
 										{#each itemsInTier as item (item._id)}
-											<div class="group relative w-20 sm:w-24 aspect-[4/5] rounded-2xl overflow-hidden shadow-md border border-white/20 dark:border-white/10 ring-1 ring-black/5 dark:ring-white/5 bg-zinc-900 shrink-0">
+											<div
+												role="button"
+												tabindex="0"
+												onclick={() => openItemDetail(item)}
+												onkeydown={(e) => {
+													if (e.key === 'Enter' || e.key === ' ') openItemDetail(item);
+												}}
+												class="group relative w-20 sm:w-24 aspect-[4/5] rounded-2xl overflow-hidden shadow-md border border-white/20 dark:border-white/10 ring-1 ring-black/5 dark:ring-white/5 bg-zinc-900 shrink-0 cursor-pointer hover:scale-[1.03] transition-all"
+											>
 												{#if item.imageUrl}
 													<img src={item.imageUrl} alt={item.name} draggable="false" class="absolute inset-0 w-full h-full object-cover pointer-events-none select-none" style="-webkit-touch-callout: none; -webkit-user-drag: none;" />
 												{:else}
@@ -1452,6 +1555,157 @@ function onDropTier(e: DragEvent, tierId: string | null) {
 						</button>
 					</div>
 				</form>
+			</div>
+		</div>
+	{/if}
+
+	<!-- Item Detail Modal (Tapping picture without long-press) -->
+	{#if selectedDetailItem}
+		{@const detailItem = selectedDetailItem}
+		{@const currentPlacement = myPlacementMap.get(detailItem._id)}
+		{@const currentTierObj = currentPlacement ? s.tiers.find((t) => t.id === currentPlacement.tierId) : null}
+		<div
+			class="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-background/80 backdrop-blur-sm overflow-y-auto"
+			role="dialog"
+			aria-modal="true"
+			aria-label="Item Details"
+			onclick={(e) => {
+				if (e.target === e.currentTarget) closeItemDetail();
+			}}
+		>
+			<div class="w-full max-w-lg rounded-2xl sm:rounded-3xl border border-border bg-card shadow-2xl overflow-hidden animate-in fade-in-0 zoom-in-95 my-auto flex flex-col max-h-[92vh]">
+				<!-- Modal Header -->
+				<div class="p-4 sm:p-5 flex items-center justify-between border-b border-border/70 shrink-0">
+					<div class="min-w-0 pr-2">
+						<h3 class="text-base sm:text-lg font-black tracking-tight text-foreground truncate">
+							{detailItem.name}
+						</h3>
+						{#if detailItem.addedBy}
+							<p class="text-[11px] sm:text-xs text-muted-foreground truncate">
+								Added by <strong class="text-foreground">{detailItem.addedBy}</strong>
+							</p>
+						{/if}
+					</div>
+					<button
+						type="button"
+						onclick={closeItemDetail}
+						class="w-8 h-8 rounded-full bg-muted/80 hover:bg-muted text-muted-foreground hover:text-foreground flex items-center justify-center transition-colors cursor-pointer shrink-0"
+						aria-label="Close dialog"
+					>
+						<CloseIcon class="w-4 h-4" />
+					</button>
+				</div>
+
+				<!-- Modal Scrollable Body -->
+				<div class="p-4 sm:p-5 space-y-4 overflow-y-auto flex-1">
+					<!-- Large Photo -->
+					<div class="relative w-full aspect-[4/3] rounded-2xl overflow-hidden bg-zinc-950 border border-border/60 shadow-inner flex items-center justify-center">
+						{#if detailItem.imageUrl}
+							<img
+								src={detailItem.imageUrl}
+								alt={detailItem.name}
+								class="w-full h-full object-contain select-none"
+							/>
+						{:else}
+							<div class="flex flex-col items-center justify-center text-muted-foreground gap-2 p-8">
+								<TastingBottleIcon class="w-12 h-12 text-muted-foreground/40" />
+								<span class="text-xs">No Photo Available</span>
+							</div>
+						{/if}
+					</div>
+
+					<!-- Notes / Description -->
+					{#if detailItem.notes}
+						<div class="p-3 sm:p-3.5 rounded-xl bg-muted/50 border border-border/70 space-y-1">
+							<p class="text-[11px] font-bold text-muted-foreground uppercase tracking-wider">Tasting Notes</p>
+							<p class="text-xs sm:text-sm text-foreground whitespace-pre-wrap leading-relaxed">{detailItem.notes}</p>
+						</div>
+					{/if}
+
+					<!-- Current Placement Status & Tier Switcher -->
+					{#if s.status === 'ranking'}
+						<div class="p-3.5 sm:p-4 rounded-xl bg-card border border-border/80 space-y-3">
+							<div class="flex items-center justify-between flex-wrap gap-2">
+								<span class="text-xs font-bold text-muted-foreground uppercase tracking-wider">Your Ranking:</span>
+								{#if currentTierObj}
+									<span
+										class="px-2.5 py-0.5 rounded-full text-xs font-black text-white shadow-xs inline-flex items-center gap-1.5"
+										style="background-color: {currentTierObj.color};"
+									>
+										<span>Tier {currentTierObj.name}</span>
+									</span>
+								{:else}
+									<span class="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-muted text-muted-foreground border border-border/60">
+										Unranked
+									</span>
+								{/if}
+							</div>
+
+							<!-- Tier Selection Buttons -->
+							<div class="space-y-1.5">
+								<p class="text-[11px] text-muted-foreground">Assign or move to tier:</p>
+								<div class="grid grid-cols-3 sm:grid-cols-6 gap-1.5">
+									{#each s.tiers as t (t.id)}
+										{@const isSelected = currentPlacement?.tierId === t.id}
+										<button
+											type="button"
+											onclick={() => handleMoveItem(detailItem._id, t.id)}
+											class="h-9 rounded-xl text-xs font-black text-white flex items-center justify-center active:scale-95 transition-all shadow-xs cursor-pointer border hover:brightness-110 {isSelected
+												? 'ring-2 ring-foreground ring-offset-2 ring-offset-background border-white'
+												: 'border-white/10 opacity-85 hover:opacity-100'}"
+											style="background-color: {t.color};"
+											title="Move to {t.name}"
+										>
+											{t.name}
+										</button>
+									{/each}
+								</div>
+
+								{#if currentPlacement}
+									<button
+										type="button"
+										onclick={() => handleMoveItem(detailItem._id, null)}
+										class="w-full mt-2 py-2 px-3 rounded-xl border border-destructive/30 bg-destructive/10 hover:bg-destructive/20 text-destructive text-xs font-semibold transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+									>
+										<CloseIcon class="w-3.5 h-3.5" />
+										<span>Return to Unranked Pool</span>
+									</button>
+								{/if}
+							</div>
+						</div>
+					{/if}
+				</div>
+
+				<!-- Modal Footer (Host Delete Option & Close) -->
+				<div class="p-3.5 sm:p-4 bg-muted/30 border-t border-border/70 flex items-center justify-between gap-2 shrink-0">
+					{#if isCurrentUserHost}
+						<button
+							type="button"
+							onclick={async () => {
+								if (typeof window !== 'undefined' && !window.confirm(`Delete "${detailItem.name}" from this tasting session?`)) return;
+								try {
+									await removeItem({ itemId: detailItem._id });
+									closeItemDetail();
+								} catch (err) {
+									console.error('Failed to remove item:', err);
+								}
+							}}
+							class="text-xs font-semibold text-destructive hover:text-destructive/80 hover:bg-destructive/10 px-3 py-1.5 rounded-lg transition-colors cursor-pointer"
+						>
+							Delete Item
+						</button>
+					{:else}
+						<div></div>
+					{/if}
+
+					<button
+						type="button"
+						onclick={closeItemDetail}
+						class="px-4 py-2 rounded-xl bg-secondary text-secondary-foreground hover:bg-secondary/80 text-xs font-bold transition-colors cursor-pointer"
+					>
+						Done
+					</button>
+				</div>
 			</div>
 		</div>
 	{/if}

@@ -68,7 +68,7 @@ export const joinSession = mutation({
             updatedAt: Date.now(),
           });
           // If session was hosted by this anon client, migrate hostId to the authenticated account
-          if (session && session.hostId === args.clientUserId) {
+          if (session && session.hostId === clientUserId) {
             await ctx.db.patch(session._id, {
               hostId: identity.subject,
               hostName: userName !== 'Taster' ? userName : session.hostName,
@@ -88,7 +88,7 @@ export const joinSession = mutation({
           }
           // Delete duplicate anonymous ranking
           await ctx.db.delete(anonRanking._id);
-          if (session && session.hostId === args.clientUserId) {
+          if (session && session.hostId === clientUserId) {
             await ctx.db.patch(session._id, {
               hostId: identity.subject,
               hostName: userName !== 'Taster' ? userName : session.hostName,
@@ -98,40 +98,55 @@ export const joinSession = mutation({
       }
     }
 
-    // Check for orphaned placeholder host created before clientUserId was supported
-    if (session?.hostId.startsWith('guest-')) {
-      const placeholderHost = await ctx.db
-        .query('rankings')
-        .withIndex('by_session_user', (q) =>
-          q.eq('sessionId', args.sessionId).eq('userId', session.hostId),
-        )
-        .first();
+    // Check for orphaned placeholder/ephemeral host created before signing in or clientUserId was passed
+    if (session && session.hostId !== userId) {
+      const isEphemeralHost =
+        (clientUserId && session.hostId === clientUserId) ||
+        session.hostId.startsWith('guest-') ||
+        session.hostId.startsWith('user_');
 
-      if (
-        placeholderHost &&
-        placeholderHost.placements.length === 0 &&
-        placeholderHost.userName === 'Host'
-      ) {
-        if (existing) {
-          // If the real user already has a ranking row, remove the orphaned placeholder host
-          await ctx.db.delete(placeholderHost._id);
-          await ctx.db.patch(session._id, {
-            hostId: userId,
-            hostName: userName,
-          });
-        } else {
-          // Reclaim placeholder host ranking for this user
-          await ctx.db.patch(placeholderHost._id, {
-            userId,
-            userName,
-            userAvatar: args.userAvatar || identity?.pictureUrl,
-            updatedAt: Date.now(),
-          });
-          await ctx.db.patch(session._id, {
-            hostId: userId,
-            hostName: userName,
-          });
-          return { rankingId: placeholderHost._id, userId };
+      if (isEphemeralHost) {
+        const placeholderHost = await ctx.db
+          .query('rankings')
+          .withIndex('by_session_user', (q) =>
+            q.eq('sessionId', args.sessionId).eq('userId', session.hostId),
+          )
+          .first();
+
+        if (
+          placeholderHost &&
+          (placeholderHost.userName === 'Host' ||
+            placeholderHost.placements.length === 0 ||
+            placeholderHost.userId === clientUserId)
+        ) {
+          if (existing) {
+            // If real user already has a ranking row, remove the orphaned placeholder host
+            if (existing.placements.length === 0 && placeholderHost.placements.length > 0) {
+              await ctx.db.patch(existing._id, {
+                placements: placeholderHost.placements,
+                isReady: placeholderHost.isReady || existing.isReady,
+                updatedAt: Date.now(),
+              });
+            }
+            await ctx.db.delete(placeholderHost._id);
+            await ctx.db.patch(session._id, {
+              hostId: userId,
+              hostName: userName,
+            });
+          } else {
+            // Reclaim placeholder host ranking for this user
+            await ctx.db.patch(placeholderHost._id, {
+              userId,
+              userName,
+              userAvatar: args.userAvatar || identity?.pictureUrl,
+              updatedAt: Date.now(),
+            });
+            await ctx.db.patch(session._id, {
+              hostId: userId,
+              hostName: userName,
+            });
+            return { rankingId: placeholderHost._id, userId };
+          }
         }
       }
     }
@@ -299,12 +314,36 @@ export const removeParticipant = mutation({
     const session = await ctx.db.get(args.sessionId);
     if (!session) throw new Error('Session not found');
 
-    if (session.hostId !== callerUserId) {
+    const isHost =
+      session.hostId === callerUserId ||
+      (!!args.clientUserId && session.hostId === args.clientUserId) ||
+      (!!identity && (session.hostId.startsWith('guest-') || session.hostId.startsWith('user_')));
+
+    if (!isHost) {
       throw new Error('Only the session host can remove participants');
     }
 
+    if (args.targetUserId === callerUserId) {
+      throw new Error('Cannot remove yourself from the session');
+    }
+
+    // If target is currently recorded as session.hostId (e.g. legacy ephemeral host being cleaned up)
     if (args.targetUserId === session.hostId) {
-      throw new Error('Cannot remove the session host');
+      // Transfer host ownership to the authenticated or active caller
+      await ctx.db.patch(session._id, {
+        hostId: callerUserId,
+        hostName: identity?.name || identity?.email || session.hostName || 'Host',
+      });
+    } else if (
+      session.hostId !== callerUserId &&
+      (session.hostId === args.clientUserId ||
+        (identity && (session.hostId.startsWith('guest-') || session.hostId.startsWith('user_'))))
+    ) {
+      // Also ensure session.hostId is promoted to the caller's permanent ID
+      await ctx.db.patch(session._id, {
+        hostId: callerUserId,
+        hostName: identity?.name || identity?.email || session.hostName,
+      });
     }
 
     const targetRanking = await ctx.db
