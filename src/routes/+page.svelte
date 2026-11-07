@@ -21,7 +21,9 @@ $effect(() => {
 });
 
 const recentSessions = useQuery(api.sessions.listRecent, () => ({
-  deviceSessionIds: !clerk.user ? deviceSessionIds : undefined,
+  deviceSessionIds,
+  clientUserId: clerk.user?.id || getOrCreateClientUserId(),
+  anonymousUserId: getOrCreateClientUserId(),
 }));
 const createSession = useMutation(api.sessions.create);
 
@@ -38,12 +40,12 @@ async function handleCreate(e: SubmitEvent) {
 
   isCreating = true;
   try {
-    const clientUserId = clerk.user?.id || getOrCreateClientUserId();
     const hostName = clerk.user?.fullName || clerk.user?.firstName || getStoredUserName() || 'Host';
     const result = await createSession({
       title: sessionTitle,
       hostName,
-      clientUserId,
+      clientUserId: clerk.user?.id || getOrCreateClientUserId(),
+      anonymousUserId: getOrCreateClientUserId(),
     });
     if (result?.sessionId) {
       saveDeviceSessionId(result.sessionId);

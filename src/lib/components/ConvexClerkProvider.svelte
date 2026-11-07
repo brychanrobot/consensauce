@@ -16,12 +16,26 @@ setupAuth(() => ({
   isAuthenticated: !!ctx.session,
   fetchAccessToken: async ({ forceRefreshToken }) => {
     if (!ctx.isLoaded || !ctx.session) return null;
-    return (
-      (await ctx.session.getToken({
-        template: 'convex',
-        skipCache: forceRefreshToken,
-      })) ?? null
-    );
+    try {
+      return (
+        (await ctx.session.getToken({
+          template: 'convex',
+          skipCache: forceRefreshToken,
+        })) ?? null
+      );
+    } catch (err) {
+      console.warn('Failed to fetch Convex auth token using template: convex', err);
+      try {
+        return (
+          (await ctx.session.getToken({
+            skipCache: forceRefreshToken,
+          })) ?? null
+        );
+      } catch (fallbackErr) {
+        console.warn('Failed to fetch fallback Clerk auth token', fallbackErr);
+        return null;
+      }
+    }
   },
 }));
 </script>

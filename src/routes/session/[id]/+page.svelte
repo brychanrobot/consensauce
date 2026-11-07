@@ -6,6 +6,7 @@ import {
   CheckIcon,
   CloseIcon,
   CopyIcon,
+  deduplicateSessionRankings,
   EditIcon,
   EyeIcon,
   FlameIcon,
@@ -52,9 +53,7 @@ const isCurrentUserHost = $derived.by(() => {
   const h = session.data?.hostId;
   if (!h) return false;
   if (h === localUserId) return true;
-  if (clerk.user?.id && (h === clerk.user.id || h.startsWith('guest-') || h.startsWith('user_'))) {
-    return true;
-  }
+  if (clerk.user?.id && h === clerk.user.id) return true;
   return false;
 });
 
@@ -84,7 +83,7 @@ $effect(() => {
       }
     } else if (storedName?.trim()) {
       localUserName = storedName.trim();
-    } else {
+    } else if (clerk.isLoaded) {
       // Unauthenticated user without a configured name: present blocking modal!
       localUserName = '';
       tempUserName = '';
@@ -96,6 +95,7 @@ $effect(() => {
 
 // Auto-join session (reactively triggers on mount and when Clerk authentication state updates)
 $effect(() => {
+  if (!clerk.isLoaded) return;
   const currentUserId = clerk.user?.id || localUserId;
   const currentUserName = clerk.user?.fullName || localUserName;
   const currentUserAvatar = clerk.user?.imageUrl;
@@ -103,18 +103,27 @@ $effect(() => {
   if (sessionId && currentUserId && currentUserName) {
     joinSession({
       sessionId,
-      clientUserId: localUserId,
+      clientUserId: clerk.user?.id || localUserId,
+      anonymousUserId: localUserId,
       userName: currentUserName,
       userAvatar: currentUserAvatar,
     }).catch((err) => console.error('Join error:', err));
   }
 });
 
+// Derived deduplicated ranking list
+const rankingList = $derived.by(() => {
+  return deduplicateSessionRankings(rankings.data ?? [], {
+    clerkUserId: clerk.user?.id,
+    localUserId,
+    hostId: session.data?.hostId,
+  });
+});
+
 // Current user's ranking
 const myRanking = $derived.by(() => {
-  const list = rankings.data ?? [];
   const clerkId = clerk.user?.id;
-  return list.find((r) => (clerkId && r.userId === clerkId) || r.userId === localUserId);
+  return rankingList.find((r) => (clerkId && r.userId === clerkId) || r.userId === localUserId);
 });
 
 // Optimistic placement overrides: itemId -> tierId (or null for unranked)
@@ -173,10 +182,8 @@ const myRankedCount = $derived(myPlacementMap.size);
 const myProgressPercent = $derived(
   totalItemCount > 0 ? Math.round((myRankedCount / totalItemCount) * 100) : 0,
 );
-const readyTastersCount = $derived((rankings.data ?? []).filter((r) => r.isReady).length);
-const allTastersReady = $derived(
-  (rankings.data?.length ?? 0) > 0 && !!rankings.data?.every((r) => r.isReady),
-);
+const readyTastersCount = $derived(rankingList.filter((r) => r.isReady).length);
+const allTastersReady = $derived(rankingList.length > 0 && rankingList.every((r) => r.isReady));
 
 // Active tab in revealed mode ('consensus' | 'compare' | 'my')
 let activeTab = $state<'consensus' | 'compare' | 'my'>('consensus');
@@ -246,7 +253,8 @@ async function handleMoveItem(itemId: Id<'items'>, tierId: string | null) {
   try {
     await savePlacement({
       sessionId,
-      clientUserId: localUserId,
+      clientUserId: clerk.user?.id || localUserId,
+      anonymousUserId: localUserId,
       itemId,
       tierId,
     });
@@ -264,7 +272,8 @@ async function handleToggleReady() {
   try {
     await setReady({
       sessionId,
-      clientUserId: localUserId,
+      clientUserId: clerk.user?.id || localUserId,
+      anonymousUserId: localUserId,
       isReady: !myRanking.isReady,
     });
   } catch (err) {
@@ -295,7 +304,8 @@ async function handleRemoveParticipant(targetUserId: string, targetName: string)
   try {
     await removeParticipant({
       sessionId,
-      clientUserId: localUserId,
+      clientUserId: clerk.user?.id || localUserId,
+      anonymousUserId: localUserId,
       targetUserId,
     });
   } catch (err: unknown) {
@@ -338,7 +348,8 @@ function saveNewName() {
   }
   joinSession({
     sessionId,
-    clientUserId: localUserId,
+    clientUserId: clerk.user?.id || localUserId,
+    anonymousUserId: localUserId,
     userName: trimmed,
     userAvatar: clerk.user?.imageUrl,
   }).catch((err) => console.error('Join error:', err));
@@ -672,7 +683,6 @@ function onDropTier(e: DragEvent, tierId: string | null) {
 {:else}
 	{@const s = session.data}
 	{@const itemList = items.data ?? []}
-	{@const rankingList = rankings.data ?? []}
 	{@const consensusData = consensus.data}
 
 	<!-- Room Header & Control Bar -->

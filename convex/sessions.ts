@@ -1,5 +1,7 @@
 import { v } from 'convex/values';
+import type { Doc } from './_generated/dataModel';
 import { mutation, query } from './_generated/server';
+import { isEphemeralUserId } from './rankings';
 
 const DEFAULT_TIERS = [
   { id: 'S', name: 'S', color: '#ef4444' },
@@ -40,11 +42,16 @@ export const create = mutation({
     ),
     hostName: v.optional(v.string()),
     clientUserId: v.optional(v.string()),
+    anonymousUserId: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const identity = await ctx.auth.getUserIdentity();
-    const hostId =
-      identity?.subject || args.clientUserId || `guest-${Math.random().toString(36).slice(2, 8)}`;
+    const userId = identity?.subject || args.clientUserId;
+    const validAnonId =
+      args.anonymousUserId && isEphemeralUserId(args.anonymousUserId)
+        ? args.anonymousUserId
+        : undefined;
+    const hostId = userId || validAnonId || `guest-${Math.random().toString(36).slice(2, 8)}`;
     const hostName =
       args.hostName || (identity ? identity.name || identity.email || 'Host' : 'Host');
 
@@ -107,26 +114,48 @@ export const getByCode = query({
 export const listRecent = query({
   args: {
     deviceSessionIds: v.optional(v.array(v.id('sessions'))),
+    clientUserId: v.optional(v.string()),
+    anonymousUserId: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const identity = await ctx.auth.getUserIdentity();
-    if (identity) {
-      // Find sessions hosted by signed-in user
+    const userId = identity?.subject || args.clientUserId;
+    const validAnonId =
+      args.anonymousUserId && isEphemeralUserId(args.anonymousUserId)
+        ? args.anonymousUserId
+        : undefined;
+
+    const sessionMap = new Map<string, Doc<'sessions'>>();
+
+    const hostIds = new Set<string>();
+    if (userId) hostIds.add(userId);
+    if (validAnonId) hostIds.add(validAnonId);
+
+    for (const hostId of hostIds) {
       const hosted = await ctx.db
         .query('sessions')
-        .withIndex('by_host', (q) => q.eq('hostId', identity.subject))
+        .withIndex('by_host', (q) => q.eq('hostId', hostId))
         .order('desc')
         .take(20);
-      return hosted;
+      for (const s of hosted) {
+        sessionMap.set(s._id, s);
+      }
     }
-    // For unauthenticated guests, only return sessions they created or joined on this device
+
     if (args.deviceSessionIds && args.deviceSessionIds.length > 0) {
-      const sessions = await Promise.all(
-        args.deviceSessionIds.slice(0, 10).map((id) => ctx.db.get(id)),
+      const deviceSessions = await Promise.all(
+        args.deviceSessionIds.slice(0, 20).map((id) => ctx.db.get(id)),
       );
-      return sessions.filter((s): s is NonNullable<typeof s> => s !== null);
+      for (const s of deviceSessions) {
+        if (s) {
+          sessionMap.set(s._id, s);
+        }
+      }
     }
-    return [];
+
+    const deduplicated = Array.from(sessionMap.values());
+    deduplicated.sort((a, b) => b.createdAt - a.createdAt);
+    return deduplicated.slice(0, 20);
   },
 });
 

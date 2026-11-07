@@ -1,5 +1,51 @@
 import { v } from 'convex/values';
+import type { Id } from './_generated/dataModel';
 import { mutation, query } from './_generated/server';
+
+// NOTE: Keep in sync with src/lib/rankings.ts
+export function isEphemeralUserId(id?: string | null): boolean {
+  if (!id || typeof id !== 'string') return false;
+  return id.startsWith('guest-') || /^user_[a-z0-9]{1,12}$/.test(id);
+}
+
+// NOTE: Keep in sync with src/lib/rankings.ts
+export function mergePlacements(
+  rankingsList: Array<{
+    placements: Array<{ itemId: Id<'items'>; tierId: string; rank: number }>;
+    updatedAt: number;
+  }>,
+): Array<{ itemId: Id<'items'>; tierId: string; rank: number }> {
+  const sorted = [...rankingsList].sort((a, b) => a.updatedAt - b.updatedAt);
+  const itemMap = new Map<Id<'items'>, { itemId: Id<'items'>; tierId: string; rank: number }>();
+  for (const r of sorted) {
+    for (const p of r.placements) {
+      itemMap.set(p.itemId, p);
+    }
+  }
+
+  const tierMap = new Map<string, Array<{ itemId: Id<'items'>; tierId: string; rank: number }>>();
+  for (const p of itemMap.values()) {
+    let group = tierMap.get(p.tierId);
+    if (!group) {
+      group = [];
+      tierMap.set(p.tierId, group);
+    }
+    group.push(p);
+  }
+
+  const result: Array<{ itemId: Id<'items'>; tierId: string; rank: number }> = [];
+  for (const [tierId, group] of tierMap.entries()) {
+    group.sort((a, b) => a.rank - b.rank);
+    group.forEach((p, idx) => {
+      result.push({
+        itemId: p.itemId,
+        tierId,
+        rank: idx,
+      });
+    });
+  }
+  return result;
+}
 
 export const listBySession = query({
   args: { sessionId: v.id('sessions') },
@@ -15,16 +61,37 @@ export const getMyRanking = query({
   args: {
     sessionId: v.id('sessions'),
     clientUserId: v.optional(v.string()),
+    anonymousUserId: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const identity = await ctx.auth.getUserIdentity();
     const userId = identity?.subject || args.clientUserId;
-    if (!userId) return null;
+    const validAnonId =
+      args.anonymousUserId && isEphemeralUserId(args.anonymousUserId)
+        ? args.anonymousUserId
+        : undefined;
 
-    return await ctx.db
-      .query('rankings')
-      .withIndex('by_session_user', (q) => q.eq('sessionId', args.sessionId).eq('userId', userId))
-      .first();
+    if (!userId && !validAnonId) return null;
+
+    let ranking = userId
+      ? await ctx.db
+          .query('rankings')
+          .withIndex('by_session_user', (q) =>
+            q.eq('sessionId', args.sessionId).eq('userId', userId),
+          )
+          .first()
+      : null;
+
+    if (!ranking && validAnonId && validAnonId !== userId) {
+      ranking = await ctx.db
+        .query('rankings')
+        .withIndex('by_session_user', (q) =>
+          q.eq('sessionId', args.sessionId).eq('userId', validAnonId),
+        )
+        .first();
+    }
+
+    return ranking;
   },
 });
 
@@ -32,136 +99,72 @@ export const joinSession = mutation({
   args: {
     sessionId: v.id('sessions'),
     clientUserId: v.optional(v.string()),
+    anonymousUserId: v.optional(v.string()),
     userName: v.string(),
     userAvatar: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const identity = await ctx.auth.getUserIdentity();
+    const validAnonId =
+      args.anonymousUserId && isEphemeralUserId(args.anonymousUserId)
+        ? args.anonymousUserId
+        : undefined;
     const userId =
-      identity?.subject || args.clientUserId || `guest-${Math.random().toString(36).slice(2, 8)}`;
+      identity?.subject ||
+      args.clientUserId ||
+      validAnonId ||
+      `guest-${Math.random().toString(36).slice(2, 8)}`;
     const userName = args.userName.trim() || identity?.name || identity?.email || 'Taster';
 
     const session = await ctx.db.get(args.sessionId);
 
-    const existing = await ctx.db
+    const sessionRankings = await ctx.db
       .query('rankings')
-      .withIndex('by_session_user', (q) => q.eq('sessionId', args.sessionId).eq('userId', userId))
-      .first();
+      .withIndex('by_session', (q) => q.eq('sessionId', args.sessionId))
+      .take(100);
 
-    // Check if this signed-in user previously joined anonymously as clientUserId in this session
-    const clientUserId = args.clientUserId;
-    if (identity?.subject && clientUserId && identity.subject !== clientUserId) {
-      const anonRanking = await ctx.db
-        .query('rankings')
-        .withIndex('by_session_user', (q) =>
-          q.eq('sessionId', args.sessionId).eq('userId', clientUserId),
-        )
-        .first();
+    const matchingRankings = sessionRankings.filter((r) => {
+      if (r.userId === userId) return true;
+      if (validAnonId && r.userId === validAnonId) return true;
+      return false;
+    });
 
-      if (anonRanking) {
-        if (!existing) {
-          // Migrate the anonymous ranking to the signed-in user's identity
-          await ctx.db.patch(anonRanking._id, {
-            userId: identity.subject,
-            userName: userName !== 'Taster' ? userName : anonRanking.userName,
-            userAvatar: args.userAvatar || identity.pictureUrl || anonRanking.userAvatar,
-            updatedAt: Date.now(),
-          });
-          // If session was hosted by this anon client, migrate hostId to the authenticated account
-          if (session && session.hostId === clientUserId) {
-            await ctx.db.patch(session._id, {
-              hostId: identity.subject,
-              hostName: userName !== 'Taster' ? userName : session.hostName,
-            });
-          }
-          return { rankingId: anonRanking._id, userId: identity.subject };
-        } else {
-          // If both exist: merge placements if existing has none and anon has placements
-          if (existing.placements.length === 0 && anonRanking.placements.length > 0) {
-            await ctx.db.patch(existing._id, {
-              placements: anonRanking.placements,
-              isReady: anonRanking.isReady || existing.isReady,
-              userName: userName !== 'Taster' ? userName : anonRanking.userName,
-              userAvatar: args.userAvatar || identity.pictureUrl || existing.userAvatar,
-              updatedAt: Date.now(),
-            });
-          }
-          // Delete duplicate anonymous ranking
-          await ctx.db.delete(anonRanking._id);
-          if (session && session.hostId === clientUserId) {
-            await ctx.db.patch(session._id, {
-              hostId: identity.subject,
-              hostName: userName !== 'Taster' ? userName : session.hostName,
-            });
-          }
-        }
-      }
-    }
+    if (matchingRankings.length > 0) {
+      const primary = matchingRankings.find((r) => r.userId === userId) ?? matchingRankings[0];
 
-    // Check for orphaned placeholder/ephemeral host created before signing in or clientUserId was passed
-    if (session && session.hostId !== userId) {
-      const isEphemeralHost =
-        (clientUserId && session.hostId === clientUserId) ||
-        session.hostId.startsWith('guest-') ||
-        session.hostId.startsWith('user_');
+      const mergedPlacements = mergePlacements(matchingRankings);
+      const mergedIsReady = matchingRankings.some((r) => r.isReady);
+      const resolvedName = userName !== 'Taster' ? userName : primary.userName;
+      const resolvedAvatar = args.userAvatar || identity?.pictureUrl || primary.userAvatar;
 
-      if (isEphemeralHost) {
-        const placeholderHost = await ctx.db
-          .query('rankings')
-          .withIndex('by_session_user', (q) =>
-            q.eq('sessionId', args.sessionId).eq('userId', session.hostId),
-          )
-          .first();
-
-        if (
-          placeholderHost &&
-          (placeholderHost.userName === 'Host' ||
-            placeholderHost.placements.length === 0 ||
-            placeholderHost.userId === clientUserId)
-        ) {
-          if (existing) {
-            // If real user already has a ranking row, remove the orphaned placeholder host
-            if (existing.placements.length === 0 && placeholderHost.placements.length > 0) {
-              await ctx.db.patch(existing._id, {
-                placements: placeholderHost.placements,
-                isReady: placeholderHost.isReady || existing.isReady,
-                updatedAt: Date.now(),
-              });
-            }
-            await ctx.db.delete(placeholderHost._id);
-            await ctx.db.patch(session._id, {
-              hostId: userId,
-              hostName: userName,
-            });
-          } else {
-            // Reclaim placeholder host ranking for this user
-            await ctx.db.patch(placeholderHost._id, {
-              userId,
-              userName,
-              userAvatar: args.userAvatar || identity?.pictureUrl,
-              updatedAt: Date.now(),
-            });
-            await ctx.db.patch(session._id, {
-              hostId: userId,
-              hostName: userName,
-            });
-            return { rankingId: placeholderHost._id, userId };
-          }
-        }
-      }
-    }
-
-    if (existing) {
-      await ctx.db.patch(existing._id, {
-        userName,
-        userAvatar: args.userAvatar || identity?.pictureUrl,
+      await ctx.db.patch(primary._id, {
+        userId,
+        userName: resolvedName,
+        userAvatar: resolvedAvatar,
+        placements: mergedPlacements,
+        isReady: mergedIsReady,
         updatedAt: Date.now(),
       });
-      // Keep session hostName in sync if host changes their display name
-      if (session && session.hostId === userId && session.hostName !== userName) {
-        await ctx.db.patch(session._id, { hostName: userName });
+
+      for (const r of matchingRankings) {
+        if (r._id !== primary._id) {
+          await ctx.db.delete(r._id);
+        }
       }
-      return { rankingId: existing._id, userId };
+
+      if (
+        session &&
+        (session.hostId === userId || (validAnonId && session.hostId === validAnonId))
+      ) {
+        if (session.hostId !== userId || session.hostName !== resolvedName) {
+          await ctx.db.patch(session._id, {
+            hostId: userId,
+            hostName: resolvedName !== 'Taster' ? resolvedName : session.hostName,
+          });
+        }
+      }
+
+      return { rankingId: primary._id, userId };
     }
 
     const rankingId = await ctx.db.insert('rankings', {
@@ -182,6 +185,7 @@ export const savePlacement = mutation({
   args: {
     sessionId: v.id('sessions'),
     clientUserId: v.optional(v.string()),
+    anonymousUserId: v.optional(v.string()),
     itemId: v.id('items'),
     tierId: v.union(v.string(), v.null()), // null means move back to unranked
     targetRank: v.optional(v.number()),
@@ -189,26 +193,36 @@ export const savePlacement = mutation({
   handler: async (ctx, args) => {
     const identity = await ctx.auth.getUserIdentity();
     const userId = identity?.subject || args.clientUserId;
-    if (!userId) throw new Error('User not identified');
+    const validAnonId =
+      args.anonymousUserId && isEphemeralUserId(args.anonymousUserId)
+        ? args.anonymousUserId
+        : undefined;
+    const effectiveUserId = userId || validAnonId;
+    if (!effectiveUserId) throw new Error('User not identified');
 
-    let ranking = await ctx.db
-      .query('rankings')
-      .withIndex('by_session_user', (q) => q.eq('sessionId', args.sessionId).eq('userId', userId))
-      .first();
+    let ranking = userId
+      ? await ctx.db
+          .query('rankings')
+          .withIndex('by_session_user', (q) =>
+            q.eq('sessionId', args.sessionId).eq('userId', userId),
+          )
+          .first()
+      : null;
 
-    const clientUserId = args.clientUserId;
-    if (!ranking && identity?.subject && clientUserId && identity.subject !== clientUserId) {
+    if (!ranking && validAnonId && validAnonId !== userId) {
       const anonRanking = await ctx.db
         .query('rankings')
         .withIndex('by_session_user', (q) =>
-          q.eq('sessionId', args.sessionId).eq('userId', clientUserId),
+          q.eq('sessionId', args.sessionId).eq('userId', validAnonId),
         )
         .first();
       if (anonRanking) {
-        await ctx.db.patch(anonRanking._id, {
-          userId: identity.subject,
-          updatedAt: Date.now(),
-        });
+        if (userId) {
+          await ctx.db.patch(anonRanking._id, {
+            userId,
+            updatedAt: Date.now(),
+          });
+        }
         ranking = anonRanking;
       }
     }
@@ -216,7 +230,7 @@ export const savePlacement = mutation({
     if (!ranking) {
       const rankingId = await ctx.db.insert('rankings', {
         sessionId: args.sessionId,
-        userId,
+        userId: userId || effectiveUserId,
         userName: identity?.name || 'Taster',
         userAvatar: identity?.pictureUrl,
         isReady: false,
@@ -270,28 +284,37 @@ export const setReady = mutation({
   args: {
     sessionId: v.id('sessions'),
     clientUserId: v.optional(v.string()),
+    anonymousUserId: v.optional(v.string()),
     isReady: v.boolean(),
   },
   handler: async (ctx, args) => {
     const identity = await ctx.auth.getUserIdentity();
     const userId = identity?.subject || args.clientUserId;
-    if (!userId) throw new Error('User not identified');
+    const validAnonId =
+      args.anonymousUserId && isEphemeralUserId(args.anonymousUserId)
+        ? args.anonymousUserId
+        : undefined;
+    const effectiveUserId = userId || validAnonId;
+    if (!effectiveUserId) throw new Error('User not identified');
 
-    let ranking = await ctx.db
-      .query('rankings')
-      .withIndex('by_session_user', (q) => q.eq('sessionId', args.sessionId).eq('userId', userId))
-      .first();
+    let ranking = userId
+      ? await ctx.db
+          .query('rankings')
+          .withIndex('by_session_user', (q) =>
+            q.eq('sessionId', args.sessionId).eq('userId', userId),
+          )
+          .first()
+      : null;
 
-    const clientUserId = args.clientUserId;
-    if (!ranking && identity?.subject && clientUserId && identity.subject !== clientUserId) {
+    if (!ranking && validAnonId && validAnonId !== userId) {
       ranking = await ctx.db
         .query('rankings')
         .withIndex('by_session_user', (q) =>
-          q.eq('sessionId', args.sessionId).eq('userId', clientUserId),
+          q.eq('sessionId', args.sessionId).eq('userId', validAnonId),
         )
         .first();
-      if (ranking) {
-        await ctx.db.patch(ranking._id, { userId: identity.subject });
+      if (ranking && userId) {
+        await ctx.db.patch(ranking._id, { userId });
       }
     }
 
@@ -304,42 +327,34 @@ export const removeParticipant = mutation({
   args: {
     sessionId: v.id('sessions'),
     clientUserId: v.optional(v.string()),
+    anonymousUserId: v.optional(v.string()),
     targetUserId: v.string(),
   },
   handler: async (ctx, args) => {
     const identity = await ctx.auth.getUserIdentity();
     const callerUserId = identity?.subject || args.clientUserId;
-    if (!callerUserId) throw new Error('Unauthorized');
+    const validAnonId =
+      args.anonymousUserId && isEphemeralUserId(args.anonymousUserId)
+        ? args.anonymousUserId
+        : undefined;
+    if (!callerUserId && !validAnonId) throw new Error('Unauthorized');
 
     const session = await ctx.db.get(args.sessionId);
     if (!session) throw new Error('Session not found');
 
     const isHost =
-      session.hostId === callerUserId ||
-      (!!args.clientUserId && session.hostId === args.clientUserId) ||
-      (!!identity && (session.hostId.startsWith('guest-') || session.hostId.startsWith('user_')));
+      session.hostId === callerUserId || (Boolean(validAnonId) && session.hostId === validAnonId);
 
     if (!isHost) {
       throw new Error('Only the session host can remove participants');
     }
 
-    if (args.targetUserId === callerUserId) {
+    if (args.targetUserId === callerUserId || (validAnonId && args.targetUserId === validAnonId)) {
       throw new Error('Cannot remove yourself from the session');
     }
 
-    // If target is currently recorded as session.hostId (e.g. legacy ephemeral host being cleaned up)
-    if (args.targetUserId === session.hostId) {
-      // Transfer host ownership to the authenticated or active caller
-      await ctx.db.patch(session._id, {
-        hostId: callerUserId,
-        hostName: identity?.name || identity?.email || session.hostName || 'Host',
-      });
-    } else if (
-      session.hostId !== callerUserId &&
-      (session.hostId === args.clientUserId ||
-        (identity && (session.hostId.startsWith('guest-') || session.hostId.startsWith('user_'))))
-    ) {
-      // Also ensure session.hostId is promoted to the caller's permanent ID
+    // Only promote session.hostId to callerUserId if validAnonId && session.hostId === validAnonId
+    if (callerUserId && validAnonId && session.hostId === validAnonId) {
       await ctx.db.patch(session._id, {
         hostId: callerUserId,
         hostName: identity?.name || identity?.email || session.hostName,

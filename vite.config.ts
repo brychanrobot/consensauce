@@ -39,6 +39,9 @@ export default defineConfig(({ mode }) => {
       projects: [
         {
           extends: './vite.config.ts',
+          server: {
+            strictPort: false,
+          },
           test: {
             name: 'client',
             browser: {
